@@ -1,0 +1,12 @@
+{
+  "name": "Randomtalks",
+  "description": "Anonymous Random Voice & Video Social Platform. Meet someone. Start talking.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
+

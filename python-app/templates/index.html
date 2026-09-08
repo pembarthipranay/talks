@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Randomtalks — Anonymous Random Voice & Video Social Platform</title>
+  <meta name="description" content="Meet someone. Start talking. Anonymous random voice and video conversations worldwide." />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              violet: '#8b5cf6',
+              cyan: '#06b6d4',
+              surface: '#0d101a',
+              dark: '#07080c'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="/static/css/styles.css" />
+
+  <!-- Socket.IO & Three.js CDN -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body class="bg-[#07080c] text-slate-100 flex flex-col min-h-screen selection:bg-violet-500 selection:text-white">
+
+  <!-- Universal Top Navbar -->
+  <header class="w-full border-b border-white/10 bg-[#07080c]/80 backdrop-blur-xl sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+      <!-- Logo -->
+      <button id="nav-btn-landing" class="flex items-center gap-2.5 group transition-transform active:scale-95">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-violet-500/20 group-hover:shadow-violet-500/40 transition-all">
+          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <div class="flex flex-col items-start">
+          <span class="font-display font-extrabold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-slate-400">
+            Randomtalks
+          </span>
+          <span class="text-[9px] font-mono uppercase tracking-widest text-cyan-400 -mt-1">Real-time Voice & Video</span>
+        </div>
+      </button>
+
+      <!-- Navigation Actions -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <button id="nav-btn-random" class="px-3 py-1.5 rounded-lg hover:bg-white/5 text-slate-300 hover:text-white text-xs font-medium transition-all flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          <span class="hidden sm:inline">Random Talk</span>
+        </button>
+
+        <button id="nav-btn-rooms" class="px-3 py-1.5 rounded-lg hover:bg-white/5 text-slate-300 hover:text-white text-xs font-medium transition-all flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+          <span>Rooms</span>
+        </button>
+
+        <!-- Live Online Counter Badge -->
+        <div class="px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="stat-online-users" class="text-[11px] font-mono font-medium text-emerald-300">1 online</span>
+        </div>
+
+        <!-- Privacy info button -->
+        <button id="btn-nav-privacy" class="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-slate-200 transition-colors" title="Anonymous Privacy Guarantee">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+        </button>
+
+        <!-- Current User Anonymous Token Badge -->
+        <div class="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs font-mono text-slate-300">
+          <div class="w-2 h-2 rounded-full bg-violet-400"></div>
+          <span id="user-badge-name">Stranger</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main View Container -->
+  <main class="flex-1 flex flex-col relative overflow-hidden">
+
+    <!-- 1. LANDING HERO VIEW -->
+    <section id="view-landing" class="flex-1 flex flex-col justify-center items-center px-4 py-8 relative">
+      <!-- Ambient Glows -->
+      <div class="absolute top-1/4 left-1/2 -translate-x-1/2 w-[550px] h-[550px] bg-violet-600/15 rounded-full blur-[140px] pointer-events-none"></div>
+      <div class="absolute bottom-1/4 right-1/4 w-[400px] h-[400px] bg-cyan-600/10 rounded-full blur-[120px] pointer-events-none"></div>
+
+      <div class="max-w-4xl mx-auto w-full flex flex-col items-center text-center z-10 space-y-6">
+        <!-- Badge -->
+        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-slate-300">
+          <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+          <span>Anonymous Real-Time Social Audio & Video</span>
+        </div>
+
+        <!-- Headline -->
+        <h1 class="font-display font-extrabold text-4xl sm:text-6xl md:text-7xl tracking-tight leading-[1.08] text-white">
+          Meet someone. <br />
+          <span class="bg-clip-text text-transparent bg-gradient-to-r from-violet-400 via-cyan-300 to-indigo-300">
+            Start talking.
+          </span>
+        </h1>
+
+        <!-- Subtitle -->
+        <p class="max-w-xl text-slate-400 text-sm sm:text-base leading-relaxed">
+          Instantly connect with strangers worldwide through random 1-on-1 voice & video or temporary topic rooms. No registration, no user profiles, zero permanent storage.
+        </p>
+
+        <!-- CTA Action Buttons -->
+        <div class="flex flex-col sm:flex-row items-center gap-3 pt-2 w-full sm:w-auto">
+          <button id="btn-hero-start" class="w-full sm:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 text-white font-bold font-display text-sm tracking-wide shadow-xl shadow-violet-600/30 transition-all flex items-center justify-center gap-2.5 active:scale-95">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            <span>START RANDOM TALK</span>
+          </button>
+
+          <button id="btn-hero-rooms" class="w-full sm:w-auto px-7 py-4 rounded-2xl bg-white/5 hover:bg-white/10 text-slate-200 hover:text-white font-bold font-display text-sm tracking-wide border border-white/10 transition-all flex items-center justify-center gap-2 active:scale-95">
+            <svg class="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+            <span>EXPLORE ROOMS</span>
+          </button>
+        </div>
+
+        <!-- 3D Earth Globe Canvas Area -->
+        <div class="relative w-full max-w-sm h-64 sm:h-72 mt-6 flex items-center justify-center">
+          <div id="hero-globe-container" class="w-full h-full cursor-grab active:cursor-grabbing"></div>
+          <div class="absolute bottom-1 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-[10px] font-mono text-slate-400 pointer-events-none">
+            Live Global Connections
+          </div>
+        </div>
+
+        <!-- Quick Stats Strip -->
+        <div class="flex items-center gap-6 text-xs text-slate-400 font-mono pt-4 border-t border-white/5">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-violet-400"></span>
+            <span>Zero Data Stored</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
+            <span id="hero-rooms-count">3</span>
+            <span>Active Rooms</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span id="hero-online-count">1</span>
+            <span>Worldwide</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. RANDOM TALK ACTIVE VIEW -->
+    <section id="view-random-talk" class="flex-1 flex flex-col relative hidden h-[calc(100vh-64px)]">
+      <!-- Full-screen video container -->
+      <div class="relative flex-1 w-full bg-[#05060a] flex items-center justify-center overflow-hidden">
+
+        <!-- Searching State Overlay -->
+        <div id="random-searching-overlay" class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-[#07080c] space-y-6">
+          <div class="relative w-28 h-28 flex items-center justify-center">
+            <div class="absolute inset-0 rounded-full border border-violet-500/40 animate-ping"></div>
+            <div class="absolute inset-2 rounded-full border border-cyan-500/40 animate-pulse"></div>
+            <div class="w-16 h-16 rounded-full bg-gradient-to-tr from-violet-600 to-cyan-500 flex items-center justify-center text-white shadow-xl shadow-violet-600/50">
+              <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            </div>
+          </div>
+          <div class="text-center space-y-1">
+            <h2 class="font-display font-bold text-xl text-white">Finding someone...</h2>
+            <p class="text-xs text-slate-400 max-w-xs">Searching the world for your next conversation.</p>
+          </div>
+          <button id="btn-random-end" class="px-5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-slate-300 transition-all">
+            Cancel Search
+          </button>
+        </div>
+
+        <!-- Connected State: Remote Stranger Video -->
+        <div id="random-connected-overlay" class="absolute inset-0 flex items-center justify-center hidden">
+          <video id="stranger-video" autoplay playsinline class="w-full h-full object-cover"></video>
+          <div id="stranger-border" class="absolute inset-0 border-2 border-transparent pointer-events-none transition-all"></div>
+
+          <!-- Top Stranger Header Overlay -->
+          <div class="absolute top-4 left-4 z-20 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span id="stranger-header-name" class="font-display text-xs font-bold text-white">Stranger</span>
+          </div>
+
+          <!-- Picture-in-Picture Local Video Feed -->
+          <div class="absolute bottom-24 right-4 z-20 w-36 sm:w-48 aspect-video rounded-2xl bg-black/80 border border-white/20 shadow-2xl overflow-hidden backdrop-blur-md">
+            <video id="local-pip-video" autoplay playsinline muted class="w-full h-full object-cover video-mirrored"></video>
+            <div id="local-pip-border" class="absolute inset-0 border-2 border-transparent pointer-events-none"></div>
+            <div class="absolute bottom-1.5 left-2 px-2 py-0.5 rounded-md bg-black/60 text-[10px] font-mono text-white">You</div>
+          </div>
+        </div>
+
+        <!-- Call Ended State -->
+        <div id="random-ended-overlay" class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-[#07080c]/95 hidden space-y-4">
+          <div class="w-14 h-14 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center text-xl">👋</div>
+          <h3 class="font-display font-bold text-xl text-white">Conversation Ended</h3>
+          <p id="ended-reason-text" class="text-xs text-slate-400 max-w-sm text-center">Your stranger left the conversation.</p>
+          <div class="flex items-center gap-3 pt-2">
+            <button id="btn-random-ended-exit" class="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-slate-300">Exit to Home</button>
+            <button id="btn-random-ended-next" class="px-6 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-bold text-xs shadow-lg shadow-violet-600/30">Find Someone New</button>
+          </div>
+        </div>
+
+        <!-- Bottom In-Call Control Bar -->
+        <div class="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 sm:gap-3 bg-black/80 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 shadow-2xl">
+          <!-- Skip button -->
+          <button id="btn-random-skip" class="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-violet-600/20 active:scale-95">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" /></svg>
+            <span>NEXT STRANGER</span>
+          </button>
+
+          <!-- Mic toggle -->
+          <button id="btn-random-mute" class="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors" title="Toggle Microphone">
+            🎙️
+          </button>
+
+          <!-- Camera toggle -->
+          <button id="btn-random-camera" class="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors" title="Toggle Camera">
+            📷
+          </button>
+
+          <!-- AI Icebreaker -->
+          <button id="btn-icebreaker" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-cyan-300 font-mono text-xs flex items-center gap-1 transition-colors" title="Generate Icebreaker Question">
+            <span>🧊 AI Prompt</span>
+          </button>
+
+          <!-- Chat toggle -->
+          <button id="btn-random-chat-toggle" class="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors" title="Open Chat">
+            💬
+          </button>
+
+          <!-- Safety Report / Block -->
+          <button id="btn-random-block" class="p-2 rounded-xl hover:bg-white/10 text-slate-400 hover:text-rose-400" title="Block Stranger">🚫</button>
+          <button id="btn-random-report" class="p-2 rounded-xl hover:bg-white/10 text-slate-400 hover:text-amber-400" title="Report Stranger">⚠️</button>
+        </div>
+
+        <!-- In-Call Instant Chat Drawer (Slide-Over) -->
+        <div id="random-chat-drawer" class="absolute top-4 right-4 bottom-24 w-80 rounded-2xl bg-[#0d101a]/95 border border-white/10 shadow-2xl flex flex-col z-30 hidden overflow-hidden">
+          <div class="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+            <span class="font-display font-bold text-xs text-white">Instant Chat</span>
+            <span class="text-[10px] font-mono text-slate-400">Ephemeral</span>
+          </div>
+          <div id="random-chat-messages" class="flex-1 p-3 overflow-y-auto space-y-2"></div>
+          <div class="p-2 border-t border-white/10 flex items-center gap-1">
+            <input id="random-chat-input" type="text" placeholder="Type a message..." class="flex-1 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500" />
+            <button id="btn-random-chat-send" class="p-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. ROOMS DISCOVERY VIEW -->
+    <section id="view-rooms-discovery" class="flex-1 flex flex-col max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 hidden space-y-6">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 class="font-display font-extrabold text-2xl sm:text-3xl text-white">Temporary Topic Rooms</h2>
+          <p class="text-xs sm:text-sm text-slate-400">Join multi-peer voice & video rooms or create your own with temporary links.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btn-open-join-private" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 font-medium text-xs border border-white/10 transition-all">
+            Join with Code
+          </button>
+          <button id="btn-open-create-room" class="px-5 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-bold text-xs shadow-lg shadow-violet-600/30 transition-all">
+            + Create Room
+          </button>
+        </div>
+      </div>
+
+      <!-- Public Rooms Grid -->
+      <div id="rooms-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </section>
+
+    <!-- 4. ACTIVE MULTI-USER ROOM VIEW -->
+    <section id="view-room-active" class="flex-1 flex flex-col relative hidden h-[calc(100vh-64px)] p-4 space-y-4">
+      <!-- Room Top Bar -->
+      <div class="flex items-center justify-between bg-[#0d101a] border border-white/10 px-4 py-2.5 rounded-2xl">
+        <div class="flex items-center gap-3">
+          <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></span>
+          <h2 id="room-active-title" class="font-display font-bold text-sm sm:text-base text-white">Conversation Room</h2>
+        </div>
+        <button id="btn-leave-room" class="px-4 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-xs font-medium border border-rose-500/30 transition-all">
+          Leave Room
+        </button>
+      </div>
+
+      <!-- Video Grid & Chat Area -->
+      <div class="flex-1 flex gap-4 overflow-hidden">
+        <!-- Video Grid -->
+        <div class="flex-1 overflow-y-auto">
+          <div id="room-video-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 h-full auto-rows-fr"></div>
+        </div>
+
+        <!-- Room Chat & Image Share Sidebar -->
+        <div class="w-80 rounded-2xl bg-[#0d101a] border border-white/10 flex flex-col overflow-hidden hidden md:flex">
+          <div class="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+            <span class="font-display font-bold text-xs text-white">Room Chat & Photos</span>
+            <button id="btn-room-image-upload" class="text-xs text-cyan-400 hover:underline">📷 Share Image</button>
+            <input id="room-image-file-input" type="file" accept="image/*" class="hidden" />
+          </div>
+          <div id="room-chat-messages" class="flex-1 p-3 overflow-y-auto space-y-2"></div>
+          <div class="p-2 border-t border-white/10 flex items-center gap-1">
+            <input id="room-chat-input" type="text" placeholder="Send to room..." class="flex-1 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-white focus:outline-none focus:border-violet-500" />
+            <button id="btn-room-chat-send" class="p-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs">Send</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODALS -->
+
+  <!-- Permissions Modal -->
+  <div id="modal-permissions" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl hidden">
+    <div class="relative w-full max-w-md rounded-3xl bg-[#0d101a] border border-white/10 p-6 sm:p-8 space-y-6">
+      <div class="text-center space-y-1">
+        <h3 class="font-display font-extrabold text-2xl text-white">Camera & Mic Check</h3>
+        <p class="text-xs text-slate-400">Preview your hardware before entering the conversation.</p>
+      </div>
+
+      <div class="w-full aspect-video rounded-2xl bg-black border border-white/10 overflow-hidden relative">
+        <video id="permissions-video-preview" autoplay playsinline muted class="w-full h-full object-cover video-mirrored"></video>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <button id="btn-permissions-close" class="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300">
+          Cancel
+        </button>
+        <button id="btn-permissions-start" class="flex-1 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white font-bold text-xs shadow-lg shadow-violet-600/30">
+          START CHATTING NOW
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Room Modal -->
+  <div id="modal-create-room" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl hidden">
+    <div class="relative w-full max-w-md rounded-3xl bg-[#0d101a] border border-white/10 p-6 space-y-4">
+      <h3 class="font-display font-bold text-xl text-white">Create Temporary Room</h3>
+      
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 mb-1">Room Name</label>
+          <input id="create-room-name" type="text" placeholder="e.g. Design & Chill" class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none" />
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1">Description</label>
+          <input id="create-room-desc" type="text" placeholder="What will you discuss?" class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Type</label>
+            <select id="create-room-type" class="w-full px-3 py-2 rounded-xl bg-[#07080c] border border-white/10 text-white focus:outline-none">
+              <option value="public">Public</option>
+              <option value="private">Private (Code)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Max Capacity (3-20)</label>
+            <input id="create-room-capacity" type="number" min="3" max="20" value="12" class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 pt-2">
+        <button id="btn-close-create-room" class="flex-1 py-2.5 rounded-xl bg-white/5 text-xs text-slate-300">Cancel</button>
+        <button id="btn-submit-create-room" class="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs">Create Room</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Join Private Room Modal -->
+  <div id="modal-join-private" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl hidden">
+    <div class="relative w-full max-w-sm rounded-3xl bg-[#0d101a] border border-white/10 p-6 space-y-4 text-center">
+      <h3 class="font-display font-bold text-lg text-white">Enter Private Code</h3>
+      <input id="join-private-code" type="text" placeholder="Room ID or Token" class="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-center text-sm font-mono text-white focus:outline-none" />
+      <div class="flex items-center gap-2">
+        <button id="btn-close-join-private" class="flex-1 py-2 rounded-xl bg-white/5 text-xs text-slate-300">Cancel</button>
+        <button id="btn-submit-join-private" class="flex-1 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs">Join Room</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Privacy Guarantee Modal -->
+  <div id="modal-privacy" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl hidden">
+    <div class="relative w-full max-w-md rounded-3xl bg-[#0d101a] border border-white/10 p-6 space-y-4">
+      <h3 class="font-display font-bold text-xl text-white flex items-center gap-2">
+        <span>🛡️</span>
+        <span>Zero-Account Privacy Architecture</span>
+      </h3>
+      <div class="space-y-2 text-xs text-slate-300 leading-relaxed">
+        <p>• <strong>No User Database:</strong> Randomtalks runs completely in-memory. No databases, usernames, passwords, or personal logs exist.</p>
+        <p>• <strong>Peer-to-Peer Media:</strong> Voice and video streams are encrypted directly between browsers using WebRTC and never touch or record to a disk server.</p>
+        <p>• <strong>Ephemeral Identity:</strong> Closing your tab immediately terminates your random session token forever.</p>
+      </div>
+      <button id="btn-close-privacy" class="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs text-white font-medium">Understood</button>
+    </div>
+  </div>
+
+  <!-- Client Application Module -->
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

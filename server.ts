@@ -1,0 +1,825 @@
+import express from 'express';
+import http from 'http';
+import path from 'path';
+import { Server as SocketIOServer, Socket } from 'socket.io';
+import { createServer as createViteServer } from 'vite';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
+import { Room, RoomParticipant, ChatMessage, ReportReason } from './src/types.ts';
+
+dotenv.config();
+
+const app = express();
+const server = http.createServer(app);
+const PORT = Number(process.env.PORT) || 3000;
+
+// Set up Socket.IO with CORS and high packet size limit for temporary in-room image sharing (up to 6MB)
+const io = new SocketIOServer(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
+  maxHttpBufferSize: 6 * 1024 * 1024, // 6 MB for ephemeral image transfer
+});
+
+app.use(express.json({ limit: '6mb' }));
+
+// In-memory Ephemeral State
+interface ConnectedUser {
+  socketId: string;
+  sessionId: string;
+  name: string;
+  avatarSeed: string;
+  currentRoomId: string | null;
+  pairedStrangerId: string | null;
+  isMuted: boolean;
+  isVideoOff: boolean;
+  isSpeaking: boolean;
+  blockedUsers: Set<string>;
+  joinedAt: number;
+}
+
+const usersBySession = new Map<string, ConnectedUser>();
+const usersBySocket = new Map<string, ConnectedUser>();
+let waitingQueue: string[] = []; // Session IDs waiting for 1-on-1 random talk
+const activeRooms = new Map<string, Room>();
+
+// Seed a few interesting starter public rooms if none exist, so users can explore immediately
+function seedDefaultRooms() {
+  const defaults = [
+    {
+      id: 'room-latenight',
+      token: 'tok-latenight',
+      type: 'public' as const,
+      name: 'Late Night Thoughts',
+      description: 'Chill voices from around the world discussing life, universe, and everything.',
+      creatorId: 'system-ambient',
+      maxParticipants: 12,
+      participants: [],
+      createdAt: Date.now() - 3600000,
+    },
+    {
+      id: 'room-music-chill',
+      token: 'tok-music-chill',
+      type: 'public' as const,
+      name: 'Global Ambient Lounge',
+      description: 'Open mic for music enthusiasts, background soundscapes, and relaxed talks.',
+      creatorId: 'system-ambient',
+      maxParticipants: 16,
+      participants: [],
+      createdAt: Date.now() - 7200000,
+    },
+    {
+      id: 'room-tech-future',
+      token: 'tok-tech-future',
+      type: 'public' as const,
+      name: 'Deep Tech & Futurism',
+      description: 'Robotics, space travel, AI philosophy, and high-frontier exploration.',
+      creatorId: 'system-ambient',
+      maxParticipants: 8,
+      participants: [],
+      createdAt: Date.now() - 1800000,
+    }
+  ];
+
+  for (const r of defaults) {
+    if (!activeRooms.has(r.id)) {
+      activeRooms.set(r.id, r);
+    }
+  }
+}
+
+seedDefaultRooms();
+
+// ICE Servers configuration:
+// For the current MVP, only the STUN server 'stun:stun.l.google.com:19302' is used.
+// TURN_SERVER, TURN_USERNAME, and TURN_PASSWORD are completely optional.
+// TURN is only configured when all three environment variables are actually present.
+const STUN_SERVER = 'stun:stun.l.google.com:19302';
+
+function getIceServers(): RTCIceServer[] {
+  const iceServers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+  ];
+
+  const turnServer = process.env.TURN_SERVER?.trim();
+  const turnUsername = process.env.TURN_USERNAME?.trim();
+  const turnPassword = process.env.TURN_PASSWORD?.trim();
+
+  // Only add a TURN server when all three TURN environment variables are actually present
+  if (turnServer && turnUsername && turnPassword) {
+    iceServers.push({
+      urls: turnServer,
+      username: turnUsername,
+      credential: turnPassword,
+    });
+  }
+
+  return iceServers;
+}
+
+// Gemini AI Lazy Initialization
+let aiClient: GoogleGenAI | null = null;
+function getAi(): GoogleGenAI | null {
+  if (!aiClient && process.env.GEMINI_API_KEY) {
+    try {
+      aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    } catch (e) {
+      console.warn('Failed to initialize Gemini AI client:', e);
+    }
+  }
+  return aiClient;
+}
+
+const FALLBACK_TOPICS = [
+  "If you could teleport anywhere in the world right now for 1 hour, where would you go?",
+  "What is a piece of advice you received that completely changed your perspective?",
+  "If you had to listen to only one song on repeat for the rest of your life, what is it?",
+  "What is an unexpected hobby or skill you picked up recently?",
+  "Would you rather live 100 years in the past or 100 years in the future?",
+  "What's the best meal you've ever had in your life?",
+  "What is something you believed as a child that turned out to be hilarious or false?",
+  "If you could instantly master any musical instrument, which one would you pick?",
+  "What is a movie, book, or story that left a lasting impact on you?",
+  "What is the most underrated superpower in fiction?"
+];
+
+// REST API Endpoints
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    onlineUsers: usersBySession.size,
+    waitingUsers: waitingQueue.length,
+    activeRooms: activeRooms.size,
+    timestamp: Date.now(),
+  });
+});
+
+app.get('/api/ai/icebreaker', async (req, res) => {
+  try {
+    const ai = getAi();
+    if (ai) {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: 'Generate a single, fun, thought-provoking conversation starter question for two strangers meeting on voice chat. Keep it under 25 words. Return only the question without quotation marks.',
+      });
+      const topic = response.text?.trim().replace(/^["']|["']$/g, '');
+      if (topic) {
+        return res.json({ topic, source: 'gemini-3.8-flash' });
+      }
+    }
+  } catch (err: any) {
+    console.warn('Gemini API call error (using fallback):', err?.message || err);
+  }
+
+  const randomFallback = FALLBACK_TOPICS[Math.floor(Math.random() * FALLBACK_TOPICS.length)];
+  res.json({ topic: randomFallback, source: 'curated' });
+});
+
+app.get('/api/ice-servers', (req, res) => {
+  res.json({
+    iceServers: getIceServers(),
+  });
+});
+
+app.get('/api/rooms', (req, res) => {
+  const publicRooms = Array.from(activeRooms.values())
+    .filter(r => r.type === 'public')
+    .map(r => ({
+      ...r,
+      participantCount: r.participants.length,
+    }));
+  res.json(publicRooms);
+});
+
+app.get('/api/room/:roomId', (req, res) => {
+  const room = activeRooms.get(req.params.roomId);
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  res.json(room);
+});
+
+// Helper for matchmaking
+function tryMatchmaking() {
+  // Filter queue to ensure all session IDs exist and are not already paired
+  waitingQueue = waitingQueue.filter(sessionId => {
+    const user = usersBySession.get(sessionId);
+    return user && !user.pairedStrangerId && !user.currentRoomId;
+  });
+
+  if (waitingQueue.length < 2) return;
+
+  for (let i = 0; i < waitingQueue.length; i++) {
+    const userAId = waitingQueue[i];
+    const userA = usersBySession.get(userAId);
+    if (!userA) continue;
+
+    for (let j = i + 1; j < waitingQueue.length; j++) {
+      const userBId = waitingQueue[j];
+      const userB = usersBySession.get(userBId);
+      if (!userB) continue;
+
+      // Check not same user and neither has blocked the other
+      if (
+        userAId !== userBId &&
+        !userA.blockedUsers.has(userBId) &&
+        !userB.blockedUsers.has(userAId)
+      ) {
+        // Remove both from waiting queue
+        waitingQueue.splice(j, 1);
+        waitingQueue.splice(i, 1);
+
+        userA.pairedStrangerId = userBId;
+        userB.pairedStrangerId = userAId;
+
+        // User A is designated initiator (creates offer), User B answers
+        io.to(userA.socketId).emit('match:found', {
+          stranger: {
+            id: userB.sessionId,
+            name: userB.name,
+            avatarSeed: userB.avatarSeed,
+          },
+          isInitiator: true,
+          iceServers: getIceServers(),
+        });
+
+        io.to(userB.socketId).emit('match:found', {
+          stranger: {
+            id: userA.sessionId,
+            name: userA.name,
+            avatarSeed: userA.avatarSeed,
+          },
+          isInitiator: false,
+          iceServers: getIceServers(),
+        });
+
+        // Broadcast stats update reflecting users leaving waiting queue
+        io.emit('stats:update', {
+          onlineUsers: usersBySession.size,
+          waitingUsers: waitingQueue.length,
+          activeRooms: activeRooms.size,
+        });
+
+        // Continue matching other pairs
+        tryMatchmaking();
+        return;
+      }
+    }
+  }
+}
+
+// Clean up user from active random talk pair
+function breakPair(user: ConnectedUser, notifyReason: string = 'stranger-left') {
+  if (!user.pairedStrangerId) return;
+
+  const strangerId = user.pairedStrangerId;
+  user.pairedStrangerId = null;
+
+  const stranger = usersBySession.get(strangerId);
+  if (stranger) {
+    stranger.pairedStrangerId = null;
+    io.to(stranger.socketId).emit('call:ended', {
+      reason: notifyReason,
+      strangerId: user.sessionId,
+    });
+  }
+}
+
+// Socket.IO Connection Handler
+io.on('connection', (socket: Socket) => {
+  let currentUser: ConnectedUser | null = null;
+
+  // 1. Session initialization (Anonymous token generated client or assigned)
+  socket.on('session:init', (data: { sessionId?: string; name?: string }) => {
+    const sessionId = data.sessionId || `anonymous-user-${Math.random().toString(36).substring(2, 8)}`;
+    const randomNum = Math.floor(10 + Math.random() * 90);
+    const name = data.name || `Stranger ${randomNum}`;
+    const avatarSeed = `seed-${sessionId}`;
+
+    currentUser = {
+      socketId: socket.id,
+      sessionId,
+      name,
+      avatarSeed,
+      currentRoomId: null,
+      pairedStrangerId: null,
+      isMuted: false,
+      isVideoOff: false,
+      isSpeaking: false,
+      blockedUsers: new Set(),
+      joinedAt: Date.now(),
+    };
+
+    usersBySession.set(sessionId, currentUser);
+    usersBySocket.set(socket.id, currentUser);
+
+    socket.emit('session:ready', {
+      user: {
+        id: sessionId,
+        name,
+        avatarSeed,
+      },
+      iceServers: getIceServers(),
+      onlineCount: usersBySession.size,
+    });
+
+    // Broadcast updated stats
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
+  });
+
+  function ensureCurrentUser(): ConnectedUser {
+    if (currentUser) return currentUser;
+    const existing = usersBySocket.get(socket.id);
+    if (existing) {
+      currentUser = existing;
+      return currentUser;
+    }
+    const sessionId = `anon-${Math.random().toString(36).substring(2, 9)}`;
+    const randomNum = Math.floor(100 + Math.random() * 900);
+    currentUser = {
+      socketId: socket.id,
+      sessionId,
+      name: `Stranger ${randomNum}`,
+      avatarSeed: `seed-${sessionId}`,
+      currentRoomId: null,
+      pairedStrangerId: null,
+      isMuted: false,
+      isVideoOff: false,
+      isSpeaking: false,
+      blockedUsers: new Set(),
+      joinedAt: Date.now(),
+    };
+    usersBySession.set(sessionId, currentUser);
+    usersBySocket.set(socket.id, currentUser);
+    return currentUser;
+  }
+
+  // 2. Random Match Request
+  socket.on('match:request', () => {
+    const user = ensureCurrentUser();
+
+    // Leave any existing pair or room first
+    breakPair(user, 'next');
+    if (user.currentRoomId) {
+      leaveCurrentRoom(user);
+    }
+
+    if (!waitingQueue.includes(user.sessionId)) {
+      waitingQueue.push(user.sessionId);
+    }
+
+    socket.emit('match:queued');
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
+
+    tryMatchmaking();
+  });
+
+  // 3. Match Cancel
+  socket.on('match:cancel', () => {
+    const user = ensureCurrentUser();
+    waitingQueue = waitingQueue.filter(id => id !== user.sessionId);
+    socket.emit('match:cancelled');
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
+  });
+
+  // 4. Match Next (Skip stranger and find someone new)
+  socket.on('match:next', () => {
+    const user = ensureCurrentUser();
+    breakPair(user, 'stranger-skipped');
+
+    if (!waitingQueue.includes(user.sessionId)) {
+      waitingQueue.push(user.sessionId);
+    }
+
+    socket.emit('match:queued');
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
+
+    tryMatchmaking();
+  });
+
+  // 5. Match End (Return to idle)
+  socket.on('match:end', () => {
+    if (!currentUser) return;
+    waitingQueue = waitingQueue.filter(id => id !== currentUser?.sessionId);
+    breakPair(currentUser, 'call-ended');
+    socket.emit('match:idle');
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
+  });
+
+  // 6. WebRTC 1-on-1 Signaling
+  socket.on('webrtc:offer', (payload: { sdp: RTCSessionDescriptionInit }) => {
+    if (!currentUser || !currentUser.pairedStrangerId) return;
+    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (stranger) {
+      io.to(stranger.socketId).emit('webrtc:offer', {
+        sdp: payload.sdp,
+        from: currentUser.sessionId,
+      });
+    }
+  });
+
+  socket.on('webrtc:answer', (payload: { sdp: RTCSessionDescriptionInit }) => {
+    if (!currentUser || !currentUser.pairedStrangerId) return;
+    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (stranger) {
+      io.to(stranger.socketId).emit('webrtc:answer', {
+        sdp: payload.sdp,
+        from: currentUser.sessionId,
+      });
+    }
+  });
+
+  socket.on('webrtc:ice-candidate', (payload: { candidate: RTCIceCandidateInit }) => {
+    if (!currentUser || !currentUser.pairedStrangerId) return;
+    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (stranger) {
+      io.to(stranger.socketId).emit('webrtc:ice-candidate', {
+        candidate: payload.candidate,
+        from: currentUser.sessionId,
+      });
+    }
+  });
+
+  // 7. Instant In-Call Text Chat for Random Talk
+  socket.on('random:chat', (data: { text: string }) => {
+    if (!currentUser || !currentUser.pairedStrangerId || !data.text) return;
+    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (stranger) {
+      const msg: ChatMessage = {
+        id: `msg-${Math.random().toString(36).substring(2, 9)}`,
+        senderId: currentUser.sessionId,
+        senderName: currentUser.name,
+        text: data.text.slice(0, 500),
+        timestamp: Date.now(),
+      };
+      io.to(stranger.socketId).emit('random:chat', msg);
+      socket.emit('random:chat', msg);
+    }
+  });
+
+  // 8. User State Changes (mute, camera, speaking)
+  socket.on('user:mute', (isMuted: boolean) => {
+    if (!currentUser) return;
+    currentUser.isMuted = isMuted;
+
+    if (currentUser.pairedStrangerId) {
+      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+      if (stranger) {
+        io.to(stranger.socketId).emit('peer:mute', {
+          userId: currentUser.sessionId,
+          isMuted,
+        });
+      }
+    }
+
+    if (currentUser.currentRoomId) {
+      io.to(currentUser.currentRoomId).emit('room:participant-state', {
+        userId: currentUser.sessionId,
+        isMuted,
+      });
+    }
+  });
+
+  socket.on('user:camera', (isVideoOff: boolean) => {
+    if (!currentUser) return;
+    currentUser.isVideoOff = isVideoOff;
+
+    if (currentUser.pairedStrangerId) {
+      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+      if (stranger) {
+        io.to(stranger.socketId).emit('peer:camera', {
+          userId: currentUser.sessionId,
+          isVideoOff,
+        });
+      }
+    }
+
+    if (currentUser.currentRoomId) {
+      io.to(currentUser.currentRoomId).emit('room:participant-state', {
+        userId: currentUser.sessionId,
+        isVideoOff,
+      });
+    }
+  });
+
+  socket.on('user:speaking', (isSpeaking: boolean) => {
+    if (!currentUser) return;
+    currentUser.isSpeaking = isSpeaking;
+
+    if (currentUser.pairedStrangerId) {
+      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+      if (stranger) {
+        io.to(stranger.socketId).emit('peer:speaking', {
+          userId: currentUser.sessionId,
+          isSpeaking,
+        });
+      }
+    }
+
+    if (currentUser.currentRoomId) {
+      io.to(currentUser.currentRoomId).emit('room:participant-state', {
+        userId: currentUser.sessionId,
+        isSpeaking,
+      });
+    }
+  });
+
+  // 9. Block User (Session-only block)
+  socket.on('user:block', () => {
+    if (!currentUser || !currentUser.pairedStrangerId) return;
+    const strangerId = currentUser.pairedStrangerId;
+    currentUser.blockedUsers.add(strangerId);
+
+    const stranger = usersBySession.get(strangerId);
+    if (stranger) {
+      stranger.blockedUsers.add(currentUser.sessionId);
+    }
+
+    breakPair(currentUser, 'blocked');
+    socket.emit('user:blocked-success', { strangerId });
+  });
+
+  // 10. Report User
+  socket.on('user:report', (data: { reason: ReportReason; details?: string }) => {
+    if (!currentUser || !currentUser.pairedStrangerId) return;
+    const strangerId = currentUser.pairedStrangerId;
+    currentUser.blockedUsers.add(strangerId);
+
+    console.log(`[SAFETY REPORT] Reporter: ${currentUser.sessionId} reported Stranger: ${strangerId}. Reason: ${data.reason}`);
+    breakPair(currentUser, 'reported');
+    socket.emit('user:reported-success', { strangerId });
+  });
+
+  // 11. Room Management
+  function leaveCurrentRoom(user: ConnectedUser) {
+    if (!user.currentRoomId) return;
+    const room = activeRooms.get(user.currentRoomId);
+    if (!room) {
+      user.currentRoomId = null;
+      return;
+    }
+
+    socket.leave(room.id);
+    user.currentRoomId = null;
+
+    room.participants = room.participants.filter(p => p.id !== user.sessionId);
+
+    if (room.participants.length === 0) {
+      // If no one is left and it's not a permanent system room, delete it
+      if (!room.id.startsWith('room-latenight') && !room.id.startsWith('room-music') && !room.id.startsWith('room-tech')) {
+        activeRooms.delete(room.id);
+      }
+    } else {
+      // Transfer ownership if creator left (Option A)
+      if (room.creatorId === user.sessionId && room.participants.length > 0) {
+        room.creatorId = room.participants[0].id;
+        room.participants[0].isCreator = true;
+        io.to(room.id).emit('room:ownership-transferred', {
+          newCreatorId: room.creatorId,
+        });
+      }
+
+      io.to(room.id).emit('room:user-left', {
+        userId: user.sessionId,
+        name: user.name,
+        remainingCount: room.participants.length,
+      });
+    }
+
+    io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+  }
+
+  socket.on('room:create', (data: {
+    name: string;
+    description: string;
+    type: 'public' | 'private';
+    maxParticipants: number;
+  }) => {
+    if (!currentUser) return;
+
+    // Validate inputs
+    const name = (data.name || 'Conversation Room').trim().slice(0, 50);
+    const description = (data.description || 'Join to talk and share ideas').trim().slice(0, 200);
+    const type = data.type === 'private' ? 'private' : 'public';
+    const maxParticipants = Math.max(3, Math.min(20, Number(data.maxParticipants) || 12));
+
+    const roomId = `room-${Math.random().toString(36).substring(2, 9)}`;
+    const roomToken = `tok-${Math.random().toString(36).substring(2, 12)}`;
+
+    const newRoom: Room = {
+      id: roomId,
+      token: roomToken,
+      type,
+      name,
+      description,
+      creatorId: currentUser.sessionId,
+      maxParticipants,
+      participants: [],
+      createdAt: Date.now(),
+    };
+
+    activeRooms.set(roomId, newRoom);
+    socket.emit('room:created', newRoom);
+    io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+  });
+
+  socket.on('room:join', (data: { roomId: string; token?: string }) => {
+    if (!currentUser) return;
+    const room = activeRooms.get(data.roomId);
+
+    if (!room) {
+      return socket.emit('room:error', { message: 'Room not found or has expired.' });
+    }
+
+    if (room.type === 'private' && data.token && data.token !== room.token) {
+      return socket.emit('room:error', { message: 'Invalid room invite token.' });
+    }
+
+    if (room.participants.length >= room.maxParticipants) {
+      return socket.emit('room:error', { message: 'This room is currently full (Maximum capacity reached).' });
+    }
+
+    // Leave any current room or random match
+    if (currentUser.currentRoomId) {
+      leaveCurrentRoom(currentUser);
+    }
+    breakPair(currentUser, 'joined-room');
+
+    socket.join(room.id);
+    currentUser.currentRoomId = room.id;
+
+    const participant: RoomParticipant = {
+      id: currentUser.sessionId,
+      socketId: socket.id,
+      name: currentUser.name,
+      isMuted: currentUser.isMuted,
+      isVideoOff: currentUser.isVideoOff,
+      isSpeaking: currentUser.isSpeaking,
+      isCreator: room.creatorId === currentUser.sessionId,
+      joinedAt: Date.now(),
+    };
+
+    // Remove existing if any (idempotency guard)
+    room.participants = room.participants.filter(p => p.id !== currentUser!.sessionId);
+    room.participants.push(participant);
+
+    // Notify joiner with full room state
+    socket.emit('room:joined', {
+      room,
+      participants: room.participants,
+      iceServers: getIceServers(),
+    });
+
+    // Notify other participants in the room
+    socket.to(room.id).emit('room:user-joined', {
+      participant,
+      totalCount: room.participants.length,
+    });
+
+    io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+  });
+
+  socket.on('room:leave', () => {
+    if (!currentUser) return;
+    leaveCurrentRoom(currentUser);
+    socket.emit('room:left');
+  });
+
+  // Room Multi-Peer WebRTC Signaling
+  socket.on('room:signal', (data: {
+    targetUserId: string;
+    signalType: 'offer' | 'answer' | 'candidate';
+    signalData: any;
+  }) => {
+    if (!currentUser || !currentUser.currentRoomId) return;
+    const targetUser = usersBySession.get(data.targetUserId);
+    if (targetUser && targetUser.currentRoomId === currentUser.currentRoomId) {
+      io.to(targetUser.socketId).emit('room:signal', {
+        fromUserId: currentUser.sessionId,
+        signalType: data.signalType,
+        signalData: data.signalData,
+      });
+    }
+  });
+
+  // Room Temporary Chat Message
+  socket.on('room:chat-message', (data: { text?: string; imageUrl?: string }) => {
+    if (!currentUser || !currentUser.currentRoomId) return;
+    const room = activeRooms.get(currentUser.currentRoomId);
+    if (!room) return;
+
+    // Validate text & image
+    const text = data.text ? data.text.trim().slice(0, 1000) : undefined;
+    let imageUrl = data.imageUrl;
+
+    // Ephemeral image validation: maximum 5MB, base64 image
+    if (imageUrl) {
+      if (!imageUrl.startsWith('data:image/')) {
+        imageUrl = undefined;
+      } else if (imageUrl.length > 5.5 * 1024 * 1024) { // Roughly 5MB
+        return socket.emit('room:error', { message: 'Image exceeds maximum 5MB size limit.' });
+      }
+    }
+
+    if (!text && !imageUrl) return;
+
+    const message: ChatMessage = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      senderId: currentUser.sessionId,
+      senderName: currentUser.name,
+      text,
+      imageUrl,
+      timestamp: Date.now(),
+    };
+
+    io.to(room.id).emit('room:chat-message', message);
+  });
+
+  // Room Creator Controls: Kick participant
+  socket.on('room:kick-participant', (data: { targetUserId: string }) => {
+    if (!currentUser || !currentUser.currentRoomId) return;
+    const room = activeRooms.get(currentUser.currentRoomId);
+    if (!room || room.creatorId !== currentUser.sessionId) return;
+
+    const targetUser = usersBySession.get(data.targetUserId);
+    if (targetUser && targetUser.currentRoomId === room.id) {
+      io.to(targetUser.socketId).emit('room:kicked', { message: 'You have been removed from the room by the host.' });
+      leaveCurrentRoom(targetUser);
+    }
+  });
+
+  // Room Creator Controls: Close room
+  socket.on('room:close-room', () => {
+    if (!currentUser || !currentUser.currentRoomId) return;
+    const room = activeRooms.get(currentUser.currentRoomId);
+    if (!room || room.creatorId !== currentUser.sessionId) return;
+
+    io.to(room.id).emit('room:closed', { message: 'The host has closed this room.' });
+    activeRooms.delete(room.id);
+    io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+  });
+
+  // Disconnect Handling
+  socket.on('disconnect', () => {
+    if (currentUser) {
+      waitingQueue = waitingQueue.filter(id => id !== currentUser?.sessionId);
+      breakPair(currentUser, 'disconnected');
+      leaveCurrentRoom(currentUser);
+
+      usersBySession.delete(currentUser.sessionId);
+      usersBySocket.delete(socket.id);
+
+      io.emit('stats:update', {
+        onlineUsers: usersBySession.size,
+        waitingUsers: waitingQueue.length,
+        activeRooms: activeRooms.size,
+      });
+    }
+  });
+});
+
+// Vite Middleware for development / Static file serving for production
+async function startServer() {
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Randomtalks Server listening at http://0.0.0.0:${PORT}`);
+  });
+}
+
+startServer();
