@@ -51,6 +51,8 @@ export const RoomView: React.FC<RoomViewProps> = ({
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [iceServers, setIceServers] = useState<IceServerConfig[]>([]);
+  const iceServersRef = useRef<IceServerConfig[]>([]);
+  const [roomNotice, setRoomNotice] = useState<string | null>(null);
 
   // Local media states
   const [isLocalMuted, setIsLocalMuted] = useState(false);
@@ -115,8 +117,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
       remoteStreamsRef.current.set(targetUserId, rStream);
     }
 
+    const currentIce = iceServersRef.current.length > 0 ? iceServersRef.current : iceServers;
+
     pcWrap = new PeerConnectionWrapper(
-      iceServers,
+      currentIce,
       (event) => {
         console.log(`[Room WebRTC] Received track from ${targetUserId}:`, event.track.kind);
         rStream?.addTrack(event.track);
@@ -163,6 +167,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       setRoom(data.room);
       setParticipants(data.participants);
       setIceServers(data.iceServers);
+      iceServersRef.current = data.iceServers;
 
       // Connect WebRTC to existing participants in room
       data.participants.forEach(async (p) => {
@@ -276,20 +281,18 @@ export const RoomView: React.FC<RoomViewProps> = ({
     };
 
     const handleRoomClosed = (data: { message: string }) => {
-      alert(data.message || 'Room was closed by host.');
       teardownAllRoomPeers();
-      onLeaveRoom();
+      setRoomNotice(data.message || 'The room was closed by the host.');
     };
 
     const handleRoomKicked = (data: { message: string }) => {
-      alert(data.message || 'You were removed from the room by the host.');
       teardownAllRoomPeers();
-      onLeaveRoom();
+      setRoomNotice(data.message || 'You were removed from the room by the host.');
     };
 
     const handleRoomError = (data: { message: string }) => {
-      alert(data.message || 'Room error.');
-      onLeaveRoom();
+      teardownAllRoomPeers();
+      setRoomNotice(data.message || 'Unable to join or maintain connection to the room.');
     };
 
     socket.on('room:joined', handleRoomJoined);
@@ -852,6 +855,28 @@ export const RoomView: React.FC<RoomViewProps> = ({
             className="max-w-[90vw] max-h-[90vh] object-contain rounded-2xl shadow-2xl"
             referrerPolicy="no-referrer"
           />
+        </div>
+      )}
+
+      {/* Room Notice Modal (Host closed, kicked, or error) */}
+      {roomNotice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-sm rounded-2xl bg-[#0e111a] border border-white/10 p-6 text-center shadow-2xl">
+            <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto mb-4">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-white mb-2">Room Notification</h3>
+            <p className="text-sm text-slate-300 mb-6">{roomNotice}</p>
+            <button
+              onClick={() => {
+                setRoomNotice(null);
+                onLeaveRoom();
+              }}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 text-white font-bold text-xs tracking-wider shadow-lg shadow-violet-600/30 transition-all cursor-pointer"
+            >
+              RETURN TO ROOMS
+            </button>
+          </div>
         </div>
       )}
     </div>

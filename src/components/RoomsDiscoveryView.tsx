@@ -29,6 +29,8 @@ export const RoomsDiscoveryView: React.FC<RoomsDiscoveryViewProps> = ({
   const [rooms, setRooms] = useState<Room[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [privateCodeInput, setPrivateCodeInput] = useState('');
 
   // Form state
@@ -55,21 +57,35 @@ export const RoomsDiscoveryView: React.FC<RoomsDiscoveryViewProps> = ({
     socket.on('rooms:updated', handleRoomsUpdated);
 
     const handleRoomCreated = (createdRoom: Room) => {
+      setIsCreating(false);
       setIsCreateOpen(false);
       onJoinRoom(createdRoom.id, createdRoom.token);
     };
 
+    const handleRoomError = (data: { message: string }) => {
+      setIsCreating(false);
+      setCreateError(data.message || 'Unable to perform room action.');
+    };
+
     socket.on('room:created', handleRoomCreated);
+    socket.on('room:error', handleRoomError);
 
     return () => {
       socket.off('rooms:updated', handleRoomsUpdated);
       socket.off('room:created', handleRoomCreated);
+      socket.off('room:error', handleRoomError);
     };
   }, [socket, onJoinRoom]);
 
   const handleCreateRoom = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
+    setIsCreating(true);
+    setCreateError(null);
+
+    if (!socket.connected) {
+      socket.connect();
+    }
 
     socket.emit('room:create', {
       name: newRoomName.trim(),
@@ -356,6 +372,12 @@ export const RoomsDiscoveryView: React.FC<RoomsDiscoveryViewProps> = ({
                 </div>
               )}
 
+              {createError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300">
+                  {createError}
+                </div>
+              )}
+
               <div className="pt-3 sm:pt-4 flex items-center gap-3">
                 <button
                   type="button"
@@ -366,10 +388,17 @@ export const RoomsDiscoveryView: React.FC<RoomsDiscoveryViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={!newRoomName.trim()}
-                  className="flex-2 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold text-xs tracking-wider shadow-lg shadow-violet-600/30 transition-all cursor-pointer"
+                  disabled={!newRoomName.trim() || isCreating}
+                  className="flex-2 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold text-xs tracking-wider shadow-lg shadow-violet-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  CREATE ROOM
+                  {isCreating ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>CREATING...</span>
+                    </>
+                  ) : (
+                    <span>CREATE ROOM</span>
+                  )}
                 </button>
               </div>
             </form>

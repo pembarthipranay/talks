@@ -102,6 +102,9 @@ function getIceServers(): RTCIceServer[] {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
   ];
 
   const turnServer = process.env.TURN_SERVER?.trim();
@@ -299,28 +302,35 @@ io.on('connection', (socket: Socket) => {
     const name = data.name || `Stranger ${randomNum}`;
     const avatarSeed = `seed-${sessionId}`;
 
-    currentUser = {
-      socketId: socket.id,
-      sessionId,
-      name,
-      avatarSeed,
-      currentRoomId: null,
-      pairedStrangerId: null,
-      isMuted: false,
-      isVideoOff: false,
-      isSpeaking: false,
-      blockedUsers: new Set(),
-      joinedAt: Date.now(),
-    };
-
-    usersBySession.set(sessionId, currentUser);
-    usersBySocket.set(socket.id, currentUser);
+    const existing = usersBySession.get(sessionId);
+    if (existing) {
+      existing.socketId = socket.id;
+      if (data.name) existing.name = data.name;
+      currentUser = existing;
+      usersBySocket.set(socket.id, currentUser);
+    } else {
+      currentUser = {
+        socketId: socket.id,
+        sessionId,
+        name,
+        avatarSeed,
+        currentRoomId: null,
+        pairedStrangerId: null,
+        isMuted: false,
+        isVideoOff: false,
+        isSpeaking: false,
+        blockedUsers: new Set(),
+        joinedAt: Date.now(),
+      };
+      usersBySession.set(sessionId, currentUser);
+      usersBySocket.set(socket.id, currentUser);
+    }
 
     socket.emit('session:ready', {
       user: {
         id: sessionId,
-        name,
-        avatarSeed,
+        name: currentUser.name,
+        avatarSeed: currentUser.avatarSeed,
       },
       iceServers: getIceServers(),
       onlineCount: usersBySession.size,
@@ -335,10 +345,16 @@ io.on('connection', (socket: Socket) => {
   });
 
   function ensureCurrentUser(): ConnectedUser {
-    if (currentUser) return currentUser;
+    if (currentUser) {
+      currentUser.socketId = socket.id;
+      usersBySocket.set(socket.id, currentUser);
+      usersBySession.set(currentUser.sessionId, currentUser);
+      return currentUser;
+    }
     const existing = usersBySocket.get(socket.id);
     if (existing) {
       currentUser = existing;
+      currentUser.socketId = socket.id;
       return currentUser;
     }
     const sessionId = `anon-${Math.random().toString(36).substring(2, 9)}`;
@@ -362,7 +378,7 @@ io.on('connection', (socket: Socket) => {
   }
 
   // 2. Random Match Request
-  socket.on('match:request', () => {
+  const handleMatchRequest = () => {
     const user = ensureCurrentUser();
 
     // Leave any existing pair or room first
@@ -383,10 +399,13 @@ io.on('connection', (socket: Socket) => {
     });
 
     tryMatchmaking();
-  });
+  };
+
+  socket.on('match:request', handleMatchRequest);
+  socket.on('match:start', handleMatchRequest);
 
   // 3. Match Cancel
-  socket.on('match:cancel', () => {
+  const handleMatchCancel = () => {
     const user = ensureCurrentUser();
     waitingQueue = waitingQueue.filter(id => id !== user.sessionId);
     socket.emit('match:cancelled');
@@ -395,7 +414,10 @@ io.on('connection', (socket: Socket) => {
       waitingUsers: waitingQueue.length,
       activeRooms: activeRooms.size,
     });
-  });
+  };
+
+  socket.on('match:cancel', handleMatchCancel);
+  socket.on('match:stop', handleMatchCancel);
 
   // 4. Match Next (Skip stranger and find someone new)
   socket.on('match:next', () => {
@@ -418,9 +440,9 @@ io.on('connection', (socket: Socket) => {
 
   // 5. Match End (Return to idle)
   socket.on('match:end', () => {
-    if (!currentUser) return;
-    waitingQueue = waitingQueue.filter(id => id !== currentUser?.sessionId);
-    breakPair(currentUser, 'call-ended');
+    const user = ensureCurrentUser();
+    waitingQueue = waitingQueue.filter(id => id !== user.sessionId);
+    breakPair(user, 'call-ended');
     socket.emit('match:idle');
     io.emit('stats:update', {
       onlineUsers: usersBySession.size,
@@ -431,47 +453,51 @@ io.on('connection', (socket: Socket) => {
 
   // 6. WebRTC 1-on-1 Signaling
   socket.on('webrtc:offer', (payload: { sdp: RTCSessionDescriptionInit }) => {
-    if (!currentUser || !currentUser.pairedStrangerId) return;
-    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId) return;
+    const stranger = usersBySession.get(user.pairedStrangerId);
     if (stranger) {
       io.to(stranger.socketId).emit('webrtc:offer', {
         sdp: payload.sdp,
-        from: currentUser.sessionId,
+        from: user.sessionId,
       });
     }
   });
 
   socket.on('webrtc:answer', (payload: { sdp: RTCSessionDescriptionInit }) => {
-    if (!currentUser || !currentUser.pairedStrangerId) return;
-    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId) return;
+    const stranger = usersBySession.get(user.pairedStrangerId);
     if (stranger) {
       io.to(stranger.socketId).emit('webrtc:answer', {
         sdp: payload.sdp,
-        from: currentUser.sessionId,
+        from: user.sessionId,
       });
     }
   });
 
   socket.on('webrtc:ice-candidate', (payload: { candidate: RTCIceCandidateInit }) => {
-    if (!currentUser || !currentUser.pairedStrangerId) return;
-    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId) return;
+    const stranger = usersBySession.get(user.pairedStrangerId);
     if (stranger) {
       io.to(stranger.socketId).emit('webrtc:ice-candidate', {
         candidate: payload.candidate,
-        from: currentUser.sessionId,
+        from: user.sessionId,
       });
     }
   });
 
   // 7. Instant In-Call Text Chat for Random Talk
   socket.on('random:chat', (data: { text: string }) => {
-    if (!currentUser || !currentUser.pairedStrangerId || !data.text) return;
-    const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId || !data.text) return;
+    const stranger = usersBySession.get(user.pairedStrangerId);
     if (stranger) {
       const msg: ChatMessage = {
         id: `msg-${Math.random().toString(36).substring(2, 9)}`,
-        senderId: currentUser.sessionId,
-        senderName: currentUser.name,
+        senderId: user.sessionId,
+        senderName: user.name,
         text: data.text.slice(0, 500),
         timestamp: Date.now(),
       };
@@ -482,66 +508,66 @@ io.on('connection', (socket: Socket) => {
 
   // 8. User State Changes (mute, camera, speaking)
   socket.on('user:mute', (isMuted: boolean) => {
-    if (!currentUser) return;
-    currentUser.isMuted = isMuted;
+    const user = ensureCurrentUser();
+    user.isMuted = isMuted;
 
-    if (currentUser.pairedStrangerId) {
-      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (user.pairedStrangerId) {
+      const stranger = usersBySession.get(user.pairedStrangerId);
       if (stranger) {
         io.to(stranger.socketId).emit('peer:mute', {
-          userId: currentUser.sessionId,
+          userId: user.sessionId,
           isMuted,
         });
       }
     }
 
-    if (currentUser.currentRoomId) {
-      io.to(currentUser.currentRoomId).emit('room:participant-state', {
-        userId: currentUser.sessionId,
+    if (user.currentRoomId) {
+      io.to(user.currentRoomId).emit('room:participant-state', {
+        userId: user.sessionId,
         isMuted,
       });
     }
   });
 
   socket.on('user:camera', (isVideoOff: boolean) => {
-    if (!currentUser) return;
-    currentUser.isVideoOff = isVideoOff;
+    const user = ensureCurrentUser();
+    user.isVideoOff = isVideoOff;
 
-    if (currentUser.pairedStrangerId) {
-      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (user.pairedStrangerId) {
+      const stranger = usersBySession.get(user.pairedStrangerId);
       if (stranger) {
         io.to(stranger.socketId).emit('peer:camera', {
-          userId: currentUser.sessionId,
+          userId: user.sessionId,
           isVideoOff,
         });
       }
     }
 
-    if (currentUser.currentRoomId) {
-      io.to(currentUser.currentRoomId).emit('room:participant-state', {
-        userId: currentUser.sessionId,
+    if (user.currentRoomId) {
+      io.to(user.currentRoomId).emit('room:participant-state', {
+        userId: user.sessionId,
         isVideoOff,
       });
     }
   });
 
   socket.on('user:speaking', (isSpeaking: boolean) => {
-    if (!currentUser) return;
-    currentUser.isSpeaking = isSpeaking;
+    const user = ensureCurrentUser();
+    user.isSpeaking = isSpeaking;
 
-    if (currentUser.pairedStrangerId) {
-      const stranger = usersBySession.get(currentUser.pairedStrangerId);
+    if (user.pairedStrangerId) {
+      const stranger = usersBySession.get(user.pairedStrangerId);
       if (stranger) {
         io.to(stranger.socketId).emit('peer:speaking', {
-          userId: currentUser.sessionId,
+          userId: user.sessionId,
           isSpeaking,
         });
       }
     }
 
-    if (currentUser.currentRoomId) {
-      io.to(currentUser.currentRoomId).emit('room:participant-state', {
-        userId: currentUser.sessionId,
+    if (user.currentRoomId) {
+      io.to(user.currentRoomId).emit('room:participant-state', {
+        userId: user.sessionId,
         isSpeaking,
       });
     }
@@ -549,27 +575,29 @@ io.on('connection', (socket: Socket) => {
 
   // 9. Block User (Session-only block)
   socket.on('user:block', () => {
-    if (!currentUser || !currentUser.pairedStrangerId) return;
-    const strangerId = currentUser.pairedStrangerId;
-    currentUser.blockedUsers.add(strangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId) return;
+    const strangerId = user.pairedStrangerId;
+    user.blockedUsers.add(strangerId);
 
     const stranger = usersBySession.get(strangerId);
     if (stranger) {
-      stranger.blockedUsers.add(currentUser.sessionId);
+      stranger.blockedUsers.add(user.sessionId);
     }
 
-    breakPair(currentUser, 'blocked');
+    breakPair(user, 'blocked');
     socket.emit('user:blocked-success', { strangerId });
   });
 
   // 10. Report User
   socket.on('user:report', (data: { reason: ReportReason; details?: string }) => {
-    if (!currentUser || !currentUser.pairedStrangerId) return;
-    const strangerId = currentUser.pairedStrangerId;
-    currentUser.blockedUsers.add(strangerId);
+    const user = ensureCurrentUser();
+    if (!user.pairedStrangerId) return;
+    const strangerId = user.pairedStrangerId;
+    user.blockedUsers.add(strangerId);
 
-    console.log(`[SAFETY REPORT] Reporter: ${currentUser.sessionId} reported Stranger: ${strangerId}. Reason: ${data.reason}`);
-    breakPair(currentUser, 'reported');
+    console.log(`[SAFETY REPORT] Reporter: ${user.sessionId} reported Stranger: ${strangerId}. Reason: ${data.reason}`);
+    breakPair(user, 'reported');
     socket.emit('user:reported-success', { strangerId });
   });
 
@@ -593,7 +621,7 @@ io.on('connection', (socket: Socket) => {
         activeRooms.delete(room.id);
       }
     } else {
-      // Transfer ownership if creator left (Option A)
+      // Transfer ownership if creator left
       if (room.creatorId === user.sessionId && room.participants.length > 0) {
         room.creatorId = room.participants[0].id;
         room.participants[0].isCreator = true;
@@ -610,6 +638,11 @@ io.on('connection', (socket: Socket) => {
     }
 
     io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
   }
 
   socket.on('room:create', (data: {
@@ -618,7 +651,7 @@ io.on('connection', (socket: Socket) => {
     type: 'public' | 'private';
     maxParticipants: number;
   }) => {
-    if (!currentUser) return;
+    const user = ensureCurrentUser();
 
     // Validate inputs
     const name = (data.name || 'Conversation Room').trim().slice(0, 50);
@@ -635,7 +668,7 @@ io.on('connection', (socket: Socket) => {
       type,
       name,
       description,
-      creatorId: currentUser.sessionId,
+      creatorId: user.sessionId,
       maxParticipants,
       participants: [],
       createdAt: Date.now(),
@@ -644,10 +677,15 @@ io.on('connection', (socket: Socket) => {
     activeRooms.set(roomId, newRoom);
     socket.emit('room:created', newRoom);
     io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
   });
 
   socket.on('room:join', (data: { roomId: string; token?: string }) => {
-    if (!currentUser) return;
+    const user = ensureCurrentUser();
     const room = activeRooms.get(data.roomId);
 
     if (!room) {
@@ -663,27 +701,27 @@ io.on('connection', (socket: Socket) => {
     }
 
     // Leave any current room or random match
-    if (currentUser.currentRoomId) {
-      leaveCurrentRoom(currentUser);
+    if (user.currentRoomId) {
+      leaveCurrentRoom(user);
     }
-    breakPair(currentUser, 'joined-room');
+    breakPair(user, 'joined-room');
 
     socket.join(room.id);
-    currentUser.currentRoomId = room.id;
+    user.currentRoomId = room.id;
 
     const participant: RoomParticipant = {
-      id: currentUser.sessionId,
+      id: user.sessionId,
       socketId: socket.id,
-      name: currentUser.name,
-      isMuted: currentUser.isMuted,
-      isVideoOff: currentUser.isVideoOff,
-      isSpeaking: currentUser.isSpeaking,
-      isCreator: room.creatorId === currentUser.sessionId,
+      name: user.name,
+      isMuted: user.isMuted,
+      isVideoOff: user.isVideoOff,
+      isSpeaking: user.isSpeaking,
+      isCreator: room.creatorId === user.sessionId,
       joinedAt: Date.now(),
     };
 
     // Remove existing if any (idempotency guard)
-    room.participants = room.participants.filter(p => p.id !== currentUser!.sessionId);
+    room.participants = room.participants.filter(p => p.id !== user.sessionId);
     room.participants.push(participant);
 
     // Notify joiner with full room state
@@ -703,8 +741,8 @@ io.on('connection', (socket: Socket) => {
   });
 
   socket.on('room:leave', () => {
-    if (!currentUser) return;
-    leaveCurrentRoom(currentUser);
+    const user = ensureCurrentUser();
+    leaveCurrentRoom(user);
     socket.emit('room:left');
   });
 
@@ -714,11 +752,12 @@ io.on('connection', (socket: Socket) => {
     signalType: 'offer' | 'answer' | 'candidate';
     signalData: any;
   }) => {
-    if (!currentUser || !currentUser.currentRoomId) return;
+    const user = ensureCurrentUser();
+    if (!user.currentRoomId) return;
     const targetUser = usersBySession.get(data.targetUserId);
-    if (targetUser && targetUser.currentRoomId === currentUser.currentRoomId) {
+    if (targetUser && targetUser.currentRoomId === user.currentRoomId) {
       io.to(targetUser.socketId).emit('room:signal', {
-        fromUserId: currentUser.sessionId,
+        fromUserId: user.sessionId,
         signalType: data.signalType,
         signalData: data.signalData,
       });
@@ -727,8 +766,9 @@ io.on('connection', (socket: Socket) => {
 
   // Room Temporary Chat Message
   socket.on('room:chat-message', (data: { text?: string; imageUrl?: string }) => {
-    if (!currentUser || !currentUser.currentRoomId) return;
-    const room = activeRooms.get(currentUser.currentRoomId);
+    const user = ensureCurrentUser();
+    if (!user.currentRoomId) return;
+    const room = activeRooms.get(user.currentRoomId);
     if (!room) return;
 
     // Validate text & image
@@ -748,8 +788,8 @@ io.on('connection', (socket: Socket) => {
 
     const message: ChatMessage = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      senderId: currentUser.sessionId,
-      senderName: currentUser.name,
+      senderId: user.sessionId,
+      senderName: user.name,
       text,
       imageUrl,
       timestamp: Date.now(),
@@ -760,9 +800,10 @@ io.on('connection', (socket: Socket) => {
 
   // Room Creator Controls: Kick participant
   socket.on('room:kick-participant', (data: { targetUserId: string }) => {
-    if (!currentUser || !currentUser.currentRoomId) return;
-    const room = activeRooms.get(currentUser.currentRoomId);
-    if (!room || room.creatorId !== currentUser.sessionId) return;
+    const user = ensureCurrentUser();
+    if (!user.currentRoomId) return;
+    const room = activeRooms.get(user.currentRoomId);
+    if (!room || room.creatorId !== user.sessionId) return;
 
     const targetUser = usersBySession.get(data.targetUserId);
     if (targetUser && targetUser.currentRoomId === room.id) {
@@ -773,13 +814,19 @@ io.on('connection', (socket: Socket) => {
 
   // Room Creator Controls: Close room
   socket.on('room:close-room', () => {
-    if (!currentUser || !currentUser.currentRoomId) return;
-    const room = activeRooms.get(currentUser.currentRoomId);
-    if (!room || room.creatorId !== currentUser.sessionId) return;
+    const user = ensureCurrentUser();
+    if (!user.currentRoomId) return;
+    const room = activeRooms.get(user.currentRoomId);
+    if (!room || room.creatorId !== user.sessionId) return;
 
     io.to(room.id).emit('room:closed', { message: 'The host has closed this room.' });
     activeRooms.delete(room.id);
     io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
   });
 
   // Disconnect Handling
@@ -789,7 +836,10 @@ io.on('connection', (socket: Socket) => {
       breakPair(currentUser, 'disconnected');
       leaveCurrentRoom(currentUser);
 
-      usersBySession.delete(currentUser.sessionId);
+      const activeUser = usersBySession.get(currentUser.sessionId);
+      if (activeUser && activeUser.socketId === socket.id) {
+        usersBySession.delete(currentUser.sessionId);
+      }
       usersBySocket.delete(socket.id);
 
       io.emit('stats:update', {

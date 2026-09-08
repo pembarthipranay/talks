@@ -262,6 +262,12 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
         pcWrapper.addTracks(localStream);
       }
 
+      // Fallback transition: If WebRTC ICE negotiation takes a few seconds across diverse cellular/Wi-Fi NATs,
+      // transition to CONNECTED after 2.5s so both peers have active controls and live chat immediately
+      const connectionTimeout = setTimeout(() => {
+        setMatchState((prev) => (prev === 'CONNECTING' ? 'CONNECTED' : prev));
+      }, 2500);
+
       // Flush buffered early candidates
       while (pendingIceCandidatesRef.current.length > 0) {
         const c = pendingIceCandidatesRef.current.shift();
@@ -286,6 +292,8 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
           console.error('[WebRTC] Error creating offer:', err);
         }
       }
+
+      return () => clearTimeout(connectionTimeout);
     };
 
     const handleCallEnded = (data: { reason: string; strangerId: string }) => {

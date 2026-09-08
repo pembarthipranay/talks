@@ -1,21 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Mic, MicOff, VideoOff, CheckCircle2, AlertCircle, RefreshCw, X, Sparkles } from 'lucide-react';
-import { requestUserMedia, stopMediaStream } from '../services/webrtc.ts';
+import { Camera, Mic, MicOff, VideoOff, CheckCircle2, AlertCircle, RefreshCw, X, Sparkles, Volume2 } from 'lucide-react';
+import { requestUserMedia, stopMediaStream, createSyntheticStream } from '../services/webrtc.ts';
 
 interface PermissionsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onReadyToStart: (stream: MediaStream) => void;
+  actionLabel?: string;
 }
 
 export const PermissionsModal: React.FC<PermissionsModalProps> = ({
   isOpen,
   onClose,
   onReadyToStart,
+  actionLabel = 'START TALKING',
 }) => {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isRequesting, setIsRequesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isAudioOnly, setIsAudioOnly] = useState(false);
   const [hasCamera, setHasCamera] = useState(false);
   const [hasMic, setHasMic] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -39,6 +42,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
     }
 
     setStream(res.stream);
+    setIsAudioOnly(Boolean(res.isAudioOnly));
     const vTrack = res.stream.getVideoTracks()[0];
     const aTrack = res.stream.getAudioTracks()[0];
 
@@ -50,26 +54,34 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
     }
   };
 
+  const handleUseAnonymousFallback = () => {
+    const synthetic = createSyntheticStream();
+    setStream(synthetic);
+    setIsAudioOnly(true);
+    setError(null);
+    setHasCamera(false);
+    setHasMic(false);
+    isAcceptedRef.current = true;
+    onReadyToStart(synthetic);
+  };
+
   useEffect(() => {
     if (isOpen) {
       isAcceptedRef.current = false;
       initPermissions();
     } else {
-      // Only tear down stream if modal was closed without being accepted
       if (stream && !isAcceptedRef.current) {
         stopMediaStream(stream);
         setStream(null);
       }
     }
     return () => {
-      // On unmount, only stop stream if it was NOT accepted and passed to the caller
       if (stream && !isAcceptedRef.current) {
         stopMediaStream(stream);
       }
     };
   }, [isOpen]);
 
-  // Connect stream to video element whenever stream changes
   useEffect(() => {
     if (videoPreviewRef.current && stream) {
       videoPreviewRef.current.srcObject = stream;
@@ -100,6 +112,8 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
     if (stream) {
       isAcceptedRef.current = true;
       onReadyToStart(stream);
+    } else {
+      handleUseAnonymousFallback();
     }
   };
 
@@ -125,10 +139,10 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
             Device Check
           </div>
           <h2 className="text-2xl sm:text-3xl font-bold font-display text-white">
-            Ready to talk?
+            Ready to connect?
           </h2>
           <p className="text-sm text-slate-400 mt-1">
-            Check your camera and microphone preview before meeting a stranger.
+            Check your camera and microphone preview before starting.
           </p>
         </div>
 
@@ -136,21 +150,38 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
         <div className="relative w-full aspect-video rounded-2xl bg-black/60 border border-white/10 overflow-hidden mb-6 flex items-center justify-center shadow-inner">
           {error ? (
             <div className="p-6 text-center max-w-sm flex flex-col items-center">
-              <AlertCircle className="w-10 h-10 text-rose-400 mb-3" />
-              <h4 className="text-base font-semibold text-rose-200 mb-1">Access Required</h4>
+              <AlertCircle className="w-10 h-10 text-amber-400 mb-3" />
+              <h4 className="text-base font-semibold text-amber-200 mb-1">Hardware Notice</h4>
               <p className="text-xs text-slate-400 mb-4">{error}</p>
-              <button
-                onClick={initPermissions}
-                className="px-4 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 text-xs font-medium border border-rose-500/30 flex items-center gap-2 transition-colors cursor-pointer"
-              >
-                <RefreshCw className="w-3.5 h-3.5 animate-spin-reverse" />
-                Try Again
-              </button>
+              <div className="flex flex-wrap gap-2 justify-center">
+                <button
+                  onClick={initPermissions}
+                  className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-medium border border-white/10 flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Retry
+                </button>
+                <button
+                  onClick={handleUseAnonymousFallback}
+                  className="px-3.5 py-2 rounded-xl bg-violet-600/30 hover:bg-violet-600/40 text-violet-200 text-xs font-medium border border-violet-500/30 flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Volume2 className="w-3.5 h-3.5" />
+                  Continue in Chat Mode
+                </button>
+              </div>
             </div>
           ) : isRequesting ? (
             <div className="flex flex-col items-center gap-3 text-slate-400">
               <RefreshCw className="w-8 h-8 animate-spin text-violet-400" />
               <span className="text-xs font-mono">Requesting browser permissions...</span>
+            </div>
+          ) : isAudioOnly ? (
+            <div className="flex flex-col items-center gap-3 text-cyan-400 p-6 text-center">
+              <Volume2 className="w-12 h-12 text-cyan-400" />
+              <div>
+                <h4 className="text-sm font-semibold text-white">Audio-Only Mode Ready</h4>
+                <p className="text-xs text-slate-400 mt-0.5">Camera disabled or unavailable. Talking with microphone and chat.</p>
+              </div>
             </div>
           ) : (
             <>
@@ -203,7 +234,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
             {hasCamera ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
             ) : (
-              <span className="text-[10px] font-mono text-slate-500">Not detected</span>
+              <span className="text-[10px] font-mono text-slate-500">{isAudioOnly ? 'Audio Only' : 'Disabled'}</span>
             )}
           </div>
 
@@ -215,7 +246,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
             {hasMic ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
             ) : (
-              <span className="text-[10px] font-mono text-slate-500">Not detected</span>
+              <span className="text-[10px] font-mono text-slate-500">{hasCamera ? 'Disabled' : 'Off'}</span>
             )}
           </div>
         </div>
@@ -230,11 +261,11 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
           </button>
           <button
             onClick={handleStart}
-            disabled={!stream || isRequesting}
+            disabled={isRequesting}
             className="flex-2 py-3 px-6 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 hover:from-violet-500 hover:to-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm tracking-wide shadow-lg shadow-violet-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <Sparkles className="w-4 h-4" />
-            <span>START MATCHING</span>
+            <span>{actionLabel}</span>
           </button>
         </div>
       </div>

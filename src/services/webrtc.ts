@@ -17,7 +17,7 @@ let analyserMap = new WeakMap<MediaStreamTrack, { analyser: AnalyserNode; interv
 export async function requestUserMedia(
   video: boolean = true,
   audio: boolean = true
-): Promise<{ stream: MediaStream | null; error: string | null }> {
+): Promise<{ stream: MediaStream | null; error: string | null; isAudioOnly?: boolean }> {
   try {
     const constraints: MediaStreamConstraints = {
       audio: audio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
@@ -25,18 +25,47 @@ export async function requestUserMedia(
     };
 
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    return { stream, error: null };
+    return { stream, error: null, isAudioOnly: !video };
   } catch (err: any) {
-    console.error('Failed to get media devices:', err);
+    console.warn('Initial media request failed, attempting fallback:', err);
+    // If video + audio failed, attempt audio-only fallback automatically
+    if (video && audio) {
+      try {
+        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+        return { stream: audioOnlyStream, error: null, isAudioOnly: true };
+      } catch (audioErr: any) {
+        console.warn('Audio-only fallback also failed:', audioErr);
+      }
+    }
+
     let errorMessage = 'Permission denied or media hardware unavailable.';
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      errorMessage = 'Camera and microphone access was denied. Please allow access in your browser settings to start talking.';
+      errorMessage = 'Camera or microphone access was denied. Please allow permission in your browser or continue in text mode.';
     } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
       errorMessage = 'No camera or microphone found on this device.';
     } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-      errorMessage = 'Camera or microphone is already in use by another application.';
+      errorMessage = 'Camera or microphone is currently in use by another app.';
     }
     return { stream: null, error: errorMessage };
+  }
+}
+
+// Generate an empty synthetic silent audio track for users who want to connect without microphone hardware
+export function createSyntheticStream(): MediaStream {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const dst = osc.connect(ctx.createMediaStreamDestination()) as any;
+    osc.start();
+    const track = dst.stream.getAudioTracks()[0];
+    track.enabled = false; // Muted by default
+    return new MediaStream([track]);
+  } catch (e) {
+    return new MediaStream();
   }
 }
 
@@ -160,11 +189,18 @@ export class PeerConnectionWrapper {
     onIceCandidate: (candidate: RTCIceCandidate) => void,
     onConnectionStateChange?: (state: RTCPeerConnectionState) => void
   ) {
-    // Default strictly to the STUN server stun:stun.l.google.com:19302 if not provided by server
+    // Reliable fallback STUN servers
     const resolvedIceServers: RTCIceServer[] =
       iceServers && iceServers.length > 0
         ? (iceServers as RTCIceServer[])
-        : [{ urls: 'stun:stun.l.google.com:19302' }];
+        : [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+          ];
 
     const config: RTCConfiguration = {
       iceServers: resolvedIceServers,

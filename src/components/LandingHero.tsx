@@ -28,8 +28,10 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
       <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 sm:pt-20 pb-12 sm:pb-16 flex-1 flex flex-col justify-center items-center text-center">
         {/* Futuristic Status Pill */}
         <div className="inline-flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full bg-white/[0.05] border border-white/10 backdrop-blur-md mb-6 sm:mb-8 text-xs sm:text-sm text-slate-300 max-w-[95%]">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
-          <span className="font-mono text-cyan-300 shrink-0">Global Peer Mesh</span>
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+          <span className="font-mono text-emerald-300 shrink-0">
+            {stats.onlineUsers >= 2 ? `${stats.onlineUsers} Online Now • Ready to Match` : 'Global Peer Mesh'}
+          </span>
           <span className="text-slate-500 hidden xs:inline">•</span>
           <span className="truncate hidden xs:inline">Instant WebRTC Connections</span>
         </div>
