@@ -10,15 +10,19 @@ import { Room, RoomParticipant, ChatMessage, ReportReason } from './src/types.ts
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT) || 3000;
 
-// Set up Socket.IO with CORS and high packet size limit for temporary in-room image sharing (up to 6MB)
+// Set up Socket.IO with CORS, WebSockets + Polling, and ping keepalive for Render
 const io = new SocketIOServer(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  transports: ['websocket', 'polling'],
+  pingInterval: 10000,
+  pingTimeout: 20000,
   maxHttpBufferSize: 6 * 1024 * 1024, // 6 MB for ephemeral image transfer
 });
 
@@ -105,6 +109,9 @@ function getIceServers(): RTCIceServer[] {
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com:3478' },
+    { urls: 'stun:stun.syncthing.net:3478' },
   ];
 
   const turnServer = process.env.TURN_SERVER?.trim();
@@ -286,8 +293,6 @@ const AI_STRANGERS: AiStrangerPersona[] = [
   },
 ];
 
-const aiTimers = new Map<string, NodeJS.Timeout>();
-
 async function generateAiStrangerReply(persona: AiStrangerPersona, userMessage: string): Promise<string> {
   const ai = getAi();
   if (ai) {
@@ -317,169 +322,98 @@ Do NOT sound like an AI assistant or robot. Never say "As an AI". Keep it concis
   return fallbacks[Math.floor(Math.random() * fallbacks.length)];
 }
 
-// Helper for matchmaking
+// Helper for matchmaking - CONNECTS ONLY REAL PERSONS
 function tryMatchmaking() {
-  // Filter queue to ensure all session IDs exist and are not already paired
+  // Filter queue to ensure all session IDs exist and are not already paired or inside a room
   waitingQueue = waitingQueue.filter(sessionId => {
     const user = usersBySession.get(sessionId);
     return user && !user.pairedStrangerId && !user.currentRoomId;
   });
 
-  // If two or more real users are waiting, pair them immediately
-  if (waitingQueue.length >= 2) {
-    for (let i = 0; i < waitingQueue.length; i++) {
-      const userAId = waitingQueue[i];
-      const userA = usersBySession.get(userAId);
-      if (!userA) continue;
+  // If two or more real users are waiting, pair them immediately in FIFO order
+  while (waitingQueue.length >= 2) {
+    const userAId = waitingQueue[0];
+    const userA = usersBySession.get(userAId);
+    if (!userA) {
+      waitingQueue.shift();
+      continue;
+    }
 
-      for (let j = i + 1; j < waitingQueue.length; j++) {
-        const userBId = waitingQueue[j];
-        const userB = usersBySession.get(userBId);
-        if (!userB) continue;
+    let pairedIndex = -1;
+    for (let j = 1; j < waitingQueue.length; j++) {
+      const userBId = waitingQueue[j];
+      const userB = usersBySession.get(userBId);
+      if (!userB) continue;
 
-        // Check not same user and neither has blocked the other
-        if (
-          userAId !== userBId &&
-          !userA.blockedUsers.has(userBId) &&
-          !userB.blockedUsers.has(userAId)
-        ) {
-          // Clear any pending AI companion timers for both
-          const timerA = aiTimers.get(userAId);
-          if (timerA) { clearTimeout(timerA); aiTimers.delete(userAId); }
-          const timerB = aiTimers.get(userBId);
-          if (timerB) { clearTimeout(timerB); aiTimers.delete(userBId); }
-
-          // Remove both from waiting queue
-          waitingQueue.splice(j, 1);
-          waitingQueue.splice(i, 1);
-
-          userA.pairedStrangerId = userBId;
-          userB.pairedStrangerId = userAId;
-
-          // User A is designated initiator (creates offer), User B answers
-          io.to(userA.socketId).emit('match:found', {
-            stranger: {
-              id: userB.sessionId,
-              name: userB.name,
-              avatarSeed: userB.avatarSeed,
-              isAiCompanion: false,
-            },
-            isInitiator: true,
-            iceServers: getIceServers(),
-          });
-
-          io.to(userB.socketId).emit('match:found', {
-            stranger: {
-              id: userA.sessionId,
-              name: userA.name,
-              avatarSeed: userA.avatarSeed,
-              isAiCompanion: false,
-            },
-            isInitiator: false,
-            iceServers: getIceServers(),
-          });
-
-          // Broadcast stats update
-          io.emit('stats:update', {
-            onlineUsers: usersBySession.size,
-            waitingUsers: waitingQueue.length,
-            activeRooms: activeRooms.size,
-          });
-
-          // Continue matching any remaining pairs
-          tryMatchmaking();
-          return;
-        }
+      if (
+        userAId !== userBId &&
+        !userA.blockedUsers.has(userBId) &&
+        !userB.blockedUsers.has(userAId)
+      ) {
+        pairedIndex = j;
+        break;
       }
     }
-  }
 
-  // If only 1 user is waiting, start a 3.5-second fallback timer to pair with an AI Stranger Companion
-  // so the user is never stuck in an infinite "Searching..." state while testing alone.
-  for (const waitingId of waitingQueue) {
-    if (!aiTimers.has(waitingId)) {
-      const timer = setTimeout(() => {
-        aiTimers.delete(waitingId);
-        // Ensure user is still waiting in queue and not paired
-        const idx = waitingQueue.indexOf(waitingId);
-        if (idx === -1) return;
-
-        const user = usersBySession.get(waitingId);
-        if (!user || user.pairedStrangerId || user.currentRoomId) return;
-
-        // Remove from queue
-        waitingQueue.splice(idx, 1);
-
-        // Pick a random persona
-        const persona = AI_STRANGERS[Math.floor(Math.random() * AI_STRANGERS.length)];
-        user.pairedStrangerId = persona.id;
-
-        io.to(user.socketId).emit('match:found', {
-          stranger: {
-            id: persona.id,
-            name: persona.name,
-            avatarSeed: persona.avatarSeed,
-            isAiCompanion: true,
-            bio: persona.bio,
-          },
-          isInitiator: true,
-          iceServers: getIceServers(),
-        });
-
-        // Broadcast stats
-        io.emit('stats:update', {
-          onlineUsers: usersBySession.size,
-          waitingUsers: waitingQueue.length,
-          activeRooms: activeRooms.size,
-        });
-
-        // Send warm initial greeting message from stranger after 1 second
-        setTimeout(() => {
-          if (user.pairedStrangerId === persona.id) {
-            io.to(user.socketId).emit('peer:speaking', {
-              userId: persona.id,
-              isSpeaking: true,
-            });
-
-            setTimeout(() => {
-              if (user.pairedStrangerId === persona.id) {
-                io.to(user.socketId).emit('random:chat', {
-                  id: `msg-greet-${Date.now()}`,
-                  senderId: persona.id,
-                  senderName: persona.name,
-                  text: persona.initialGreeting,
-                  timestamp: Date.now(),
-                });
-                io.to(user.socketId).emit('peer:speaking', {
-                  userId: persona.id,
-                  isSpeaking: false,
-                });
-              }
-            }, 1000);
-          }
-        }, 1200);
-      }, 3500);
-
-      aiTimers.set(waitingId, timer);
+    if (pairedIndex === -1) {
+      // User A cannot be paired with anyone currently in queue (e.g. mutual blocks or duplicates)
+      break;
     }
+
+    const userBId = waitingQueue[pairedIndex];
+    const userB = usersBySession.get(userBId);
+
+    // Remove both from waiting queue
+    waitingQueue.splice(pairedIndex, 1);
+    waitingQueue.splice(0, 1);
+
+    if (!userA || !userB) continue;
+
+    userA.pairedStrangerId = userBId;
+    userB.pairedStrangerId = userAId;
+
+    console.log(`[Matchmaker] 🤝 PAIRED REAL PERSONS: "${userA.name}" (${userA.sessionId}) <---> "${userB.name}" (${userB.sessionId})`);
+
+    // User A is designated initiator (creates offer), User B answers
+    io.to(userA.socketId).emit('match:found', {
+      stranger: {
+        id: userB.sessionId,
+        name: userB.name,
+        avatarSeed: userB.avatarSeed,
+        isAiCompanion: false,
+      },
+      isInitiator: true,
+      iceServers: getIceServers(),
+    });
+
+    io.to(userB.socketId).emit('match:found', {
+      stranger: {
+        id: userA.sessionId,
+        name: userA.name,
+        avatarSeed: userA.avatarSeed,
+        isAiCompanion: false,
+      },
+      isInitiator: false,
+      iceServers: getIceServers(),
+    });
+
+    // Broadcast stats update
+    io.emit('stats:update', {
+      onlineUsers: usersBySession.size,
+      waitingUsers: waitingQueue.length,
+      activeRooms: activeRooms.size,
+    });
   }
 }
 
 // Clean up user from active random talk pair
 function breakPair(user: ConnectedUser, notifyReason: string = 'stranger-left') {
-  const pendingTimer = aiTimers.get(user.sessionId);
-  if (pendingTimer) {
-    clearTimeout(pendingTimer);
-    aiTimers.delete(user.sessionId);
-  }
-
   if (!user.pairedStrangerId) return;
 
   const strangerId = user.pairedStrangerId;
   user.pairedStrangerId = null;
 
   if (strangerId.startsWith('ai-')) {
-    // AI Stranger left
     return;
   }
 
@@ -651,6 +585,43 @@ io.on('connection', (socket: Socket) => {
       waitingUsers: waitingQueue.length,
       activeRooms: activeRooms.size,
     });
+  });
+
+  // Optional: User explicitly requests to practice with AI bot for microphone/webcam solo test
+  socket.on('match:ai-practice', () => {
+    const user = ensureCurrentUser();
+    breakPair(user, 'next');
+    if (user.currentRoomId) {
+      leaveCurrentRoom(user);
+    }
+    waitingQueue = waitingQueue.filter(id => id !== user.sessionId);
+
+    const persona = AI_STRANGERS[Math.floor(Math.random() * AI_STRANGERS.length)];
+    user.pairedStrangerId = persona.id;
+
+    socket.emit('match:found', {
+      stranger: {
+        id: persona.id,
+        name: `${persona.name} (AI Bot Practice)`,
+        avatarSeed: persona.avatarSeed,
+        isAiCompanion: true,
+        bio: persona.bio,
+      },
+      isInitiator: true,
+      iceServers: getIceServers(),
+    });
+
+    setTimeout(() => {
+      if (user.pairedStrangerId === persona.id) {
+        socket.emit('random:chat', {
+          id: `msg-greet-${Date.now()}`,
+          senderId: persona.id,
+          senderName: persona.name,
+          text: `[Solo Practice Bot] ${persona.initialGreeting}`,
+          timestamp: Date.now(),
+        });
+      }
+    }, 800);
   });
 
   // 6. WebRTC 1-on-1 Signaling

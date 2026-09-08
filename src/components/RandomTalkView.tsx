@@ -18,6 +18,10 @@ import {
   X,
   Volume2,
   SwitchCamera,
+  Copy,
+  Check,
+  Bot,
+  Share2,
 } from 'lucide-react';
 import { MatchState, UserSession, IceServerConfig, ChatMessage, ReportReason } from '../types.ts';
 import { PeerConnectionWrapper, startSpeakingDetector, stopSpeakingDetector, stopMediaStream, flipCameraStream } from '../services/webrtc.ts';
@@ -37,9 +41,10 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
   onExit,
 }) => {
   const [matchState, setMatchState] = useState<MatchState>('SEARCHING');
-  const [stranger, setStranger] = useState<{ id: string; name: string; avatarSeed: string } | null>(null);
+  const [stranger, setStranger] = useState<{ id: string; name: string; avatarSeed: string; isAiCompanion?: boolean } | null>(null);
   const [isInitiator, setIsInitiator] = useState<boolean>(false);
   const [iceServers, setIceServers] = useState<IceServerConfig[]>([]);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Media states
   const [isLocalMuted, setIsLocalMuted] = useState(false);
@@ -222,7 +227,7 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
     };
 
     const handleMatchFound = async (data: {
-      stranger: { id: string; name: string; avatarSeed: string };
+      stranger: { id: string; name: string; avatarSeed: string; isAiCompanion?: boolean };
       isInitiator: boolean;
       iceServers: IceServerConfig[];
     }) => {
@@ -337,19 +342,6 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
       setTimeout(() => {
         chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
-
-      // If message is from stranger, automatically speak with browser speech synthesis if available
-      if (msg.senderId !== currentUser?.id && msg.text && 'speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel(); // cancel any stale utterance
-          const utterance = new SpeechSynthesisUtterance(msg.text);
-          utterance.rate = 1.05;
-          utterance.pitch = 1.0;
-          window.speechSynthesis.speak(utterance);
-        } catch (e) {
-          // ignore policy or synthesis block
-        }
-      }
     };
 
     socket.on('match:queued', handleMatchQueued);
@@ -456,12 +448,31 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
               {matchState === 'CONNECTED'
                 ? `With ${stranger?.name || 'Stranger'}`
                 : matchState === 'CONNECTING'
-                ? 'Connecting...'
+                ? 'Connecting peer...'
                 : matchState === 'SEARCHING'
-                ? 'Searching...'
+                ? 'Waiting for a real person...'
                 : 'Disconnected'}
             </span>
           </div>
+
+          {matchState === 'CONNECTED' && (
+            <div
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono shrink-0 ${
+                stranger?.isAiCompanion
+                  ? 'bg-violet-500/20 border border-violet-500/30 text-violet-300'
+                  : 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  stranger?.isAiCompanion ? 'bg-violet-400' : 'bg-emerald-400 animate-pulse'
+                }`}
+              />
+              <span className="text-[11px] font-semibold tracking-wide">
+                {stranger?.isAiCompanion ? '🤖 Solo Practice Bot' : '🟢 Real Person Connected'}
+              </span>
+            </div>
+          )}
 
           {matchState === 'CONNECTED' && isStrangerSpeaking && (
             <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-mono animate-pulse">
@@ -553,7 +564,7 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
         {matchState === 'SEARCHING' && (
           <div className="flex flex-col items-center justify-center text-center p-6 max-w-md z-20">
             {/* Custom Radar Wave Circles */}
-            <div className="relative w-32 h-32 sm:w-40 sm:h-40 flex items-center justify-center mb-6 sm:mb-8">
+            <div className="relative w-28 h-28 sm:w-36 sm:h-36 flex items-center justify-center mb-5 sm:mb-6">
               <div className="absolute inset-0 rounded-full border border-violet-500/20 animate-ping opacity-60" />
               <div className="absolute inset-3 rounded-full border border-cyan-500/30 animate-pulse" />
               <div className="absolute inset-8 rounded-full border border-violet-400/40 animate-pulse-subtle" />
@@ -562,16 +573,55 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
               </div>
             </div>
 
-            <h3 className="text-xl sm:text-3xl font-bold font-display text-white mb-2">
-              Finding someone...
+            <h3 className="text-xl sm:text-2xl font-bold font-display text-white mb-2">
+              Waiting for a real person...
             </h3>
-            <p className="text-xs sm:text-sm text-slate-400 mb-6 font-light max-w-xs sm:max-w-none">
-              Searching the world for your next conversation. Connecting across peer nodes...
+            <p className="text-xs sm:text-sm text-slate-300 mb-6 font-light max-w-xs sm:max-w-sm leading-relaxed">
+              You are waiting in the global queue. Automatic AI pairing has been disabled so you only connect with genuine people!
             </p>
+
+            <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full max-w-xs mb-5">
+              <button
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(window.location.href);
+                    setCopiedLink(true);
+                    setTimeout(() => setCopiedLink(false), 3000);
+                  } catch (e) {
+                    console.warn('Copy failed', e);
+                  }
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-cyan-300 text-xs font-medium transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-95"
+                title="Copy link to open in another tab or send to a friend"
+              >
+                {copiedLink ? (
+                  <>
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    <span className="text-emerald-300 font-semibold">Link Copied! Open 2nd tab to pair</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-4 h-4 text-cyan-400" />
+                    <span>Copy Link to Test with 2nd Tab</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={() => {
+                  socket.emit('match:ai-practice');
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                title="Practice solo with an AI bot while waiting for people"
+              >
+                <Bot className="w-3.5 h-3.5 text-violet-400" />
+                <span>Practice with AI Bot</span>
+              </button>
+            </div>
 
             <button
               onClick={handleEndCall}
-              className="px-5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-medium border border-white/10 transition-colors"
+              className="px-5 py-2 rounded-xl bg-transparent hover:bg-white/5 text-slate-400 hover:text-slate-200 text-xs font-medium transition-colors"
             >
               Cancel Search
             </button>
