@@ -21,6 +21,7 @@ import {
   Globe,
   Upload,
   RefreshCw,
+  UserPlus,
 } from 'lucide-react';
 import { Room, RoomParticipant, ChatMessage, UserSession, IceServerConfig } from '../types.ts';
 import {
@@ -418,6 +419,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
     }
   };
 
+  const handleAddTestGuest = () => {
+    socket.emit('room:add-guest');
+  };
+
   // Determine dynamic video grid columns based on participant count
   const allMembers = participants.length > 0 ? participants : [{
     id: currentUser?.id || 'me',
@@ -471,6 +476,16 @@ export const RoomView: React.FC<RoomViewProps> = ({
 
           {/* Top Actions */}
           <div className="flex items-center gap-2 shrink-0">
+            {/* Invite Test Guest Button */}
+            <button
+              onClick={handleAddTestGuest}
+              className="px-3 py-1.5 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 text-xs font-mono text-violet-300 flex items-center gap-1.5 border border-violet-500/30 transition-colors cursor-pointer"
+              title="Add a simulated guest to test room chat & presence"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Add Guest</span>
+            </button>
+
             <button
               onClick={handleCopyInviteLink}
               className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-mono text-slate-300 flex items-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
@@ -626,6 +641,35 @@ export const RoomView: React.FC<RoomViewProps> = ({
                   </div>
                 );
               })}
+
+            {/* If alone in room, show open invite helper card */}
+            {participants.filter((p) => p.id !== currentUser?.id).length === 0 && (
+              <div className="relative rounded-2xl bg-white/[0.02] border border-dashed border-white/10 p-6 flex flex-col items-center justify-center text-center group min-h-[140px]">
+                <div className="w-12 h-12 rounded-full bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400 mb-2">
+                  <Users className="w-5 h-5" />
+                </div>
+                <h4 className="text-xs sm:text-sm font-bold text-white mb-1">You're in the room!</h4>
+                <p className="text-[11px] text-slate-400 max-w-xs mb-3 font-light">
+                  Invite participants with your link, or add a simulated guest to test features right now.
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    onClick={handleAddTestGuest}
+                    className="px-3 py-1.5 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 text-violet-200 text-xs font-mono flex items-center gap-1.5 transition-colors border border-violet-500/30 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Add Test Guest</span>
+                  </button>
+                  <button
+                    onClick={handleCopyInviteLink}
+                    className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-mono flex items-center gap-1.5 transition-colors border border-white/10 cursor-pointer"
+                  >
+                    {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedLink ? 'Copied' : 'Copy Link'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

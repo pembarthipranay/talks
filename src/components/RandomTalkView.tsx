@@ -167,8 +167,16 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
 
   // Main Socket Matchmaking & WebRTC Event Handlers
   useEffect(() => {
+    if (!socket.connected) {
+      socket.connect();
+    }
     // Initial match request
     socket.emit('match:request');
+
+    const handleConnect = () => {
+      socket.emit('match:request');
+    };
+    socket.on('connect', handleConnect);
 
     const handleMatchQueued = () => {
       setMatchState('SEARCHING');
@@ -322,10 +330,26 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
     };
 
     const handleRandomChat = (msg: ChatMessage) => {
-      setChatMessages((prev) => [...prev, msg]);
+      setChatMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
       setTimeout(() => {
         chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
+
+      // If message is from stranger, automatically speak with browser speech synthesis if available
+      if (msg.senderId !== currentUser?.id && msg.text && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel(); // cancel any stale utterance
+          const utterance = new SpeechSynthesisUtterance(msg.text);
+          utterance.rate = 1.05;
+          utterance.pitch = 1.0;
+          window.speechSynthesis.speak(utterance);
+        } catch (e) {
+          // ignore policy or synthesis block
+        }
+      }
     };
 
     socket.on('match:queued', handleMatchQueued);
@@ -340,6 +364,7 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
     socket.on('random:chat', handleRandomChat);
 
     return () => {
+      socket.off('connect', handleConnect);
       socket.off('match:queued', handleMatchQueued);
       socket.off('match:found', handleMatchFound);
       socket.off('webrtc:offer', handleOffer);

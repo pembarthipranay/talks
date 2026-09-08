@@ -205,6 +205,118 @@ app.get('/api/room/:roomId', (req, res) => {
   res.json(room);
 });
 
+// REST endpoint to create room directly for maximum network reliability
+app.post('/api/rooms', (req, res) => {
+  const { name, description, type, maxParticipants, creatorId } = req.body || {};
+  const roomName = (name || 'Conversation Room').trim().slice(0, 50);
+  const roomDesc = (description || 'Join to talk and share ideas').trim().slice(0, 200);
+  const roomType = type === 'private' ? 'private' : 'public';
+  const capacity = Math.max(3, Math.min(20, Number(maxParticipants) || 12));
+
+  const roomId = `room-${Math.random().toString(36).substring(2, 9)}`;
+  const roomToken = `tok-${Math.random().toString(36).substring(2, 12)}`;
+
+  const newRoom: Room = {
+    id: roomId,
+    token: roomToken,
+    type: roomType,
+    name: roomName,
+    description: roomDesc,
+    creatorId: creatorId || 'anon-creator',
+    maxParticipants: capacity,
+    participants: [],
+    createdAt: Date.now(),
+  };
+
+  activeRooms.set(roomId, newRoom);
+  io.emit('rooms:updated', Array.from(activeRooms.values()).filter(r => r.type === 'public'));
+  io.emit('stats:update', {
+    onlineUsers: usersBySession.size,
+    waitingUsers: waitingQueue.length,
+    activeRooms: activeRooms.size,
+  });
+
+  res.json({ status: 'ok', room: newRoom });
+});
+
+// AI Strangers for instant 1-on-1 conversations when user is testing alone
+interface AiStrangerPersona {
+  id: string;
+  name: string;
+  avatarSeed: string;
+  bio: string;
+  initialGreeting: string;
+}
+
+const AI_STRANGERS: AiStrangerPersona[] = [
+  {
+    id: 'ai-maya-tokyo',
+    name: 'Maya (Tokyo)',
+    avatarSeed: 'maya-tokyo',
+    bio: 'Photographer and architecture enthusiast exploring Shibuya.',
+    initialGreeting: "Hey there! Greetings from Tokyo. Cool connecting with you—what are you up to today?",
+  },
+  {
+    id: 'ai-alex-london',
+    name: 'Alex (London)',
+    avatarSeed: 'alex-london',
+    bio: 'Music producer, synth collector, and night owl.',
+    initialGreeting: "Hello! Cool to cross paths. Just sipping some tea and messing with drum machines. How's your day going?",
+  },
+  {
+    id: 'ai-elena-barcelona',
+    name: 'Elena (Barcelona)',
+    avatarSeed: 'elena-barcelona',
+    bio: 'Visual designer and coffee nerd living by the Mediterranean.',
+    initialGreeting: "Hola! Nice to meet you from Barcelona. What corner of the world are you tuning in from?",
+  },
+  {
+    id: 'ai-sam-sf',
+    name: 'Sam (San Francisco)',
+    avatarSeed: 'sam-sf',
+    bio: 'Robotics hacker and deep space astronomy fan.',
+    initialGreeting: "Hey! Glad to meet you. Just checking out new tech. What is on your mind right now?",
+  },
+  {
+    id: 'ai-liam-melbourne',
+    name: 'Liam (Melbourne)',
+    avatarSeed: 'liam-melbourne',
+    bio: 'Indie game coder and avid cyclist.',
+    initialGreeting: "G'day! Good to connect with you. How is everything on your end?",
+  },
+];
+
+const aiTimers = new Map<string, NodeJS.Timeout>();
+
+async function generateAiStrangerReply(persona: AiStrangerPersona, userMessage: string): Promise<string> {
+  const ai = getAi();
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `You are ${persona.name} on an anonymous real-time chat platform like Omegle.
+Your persona background: ${persona.bio}.
+The stranger you're talking to just sent: "${userMessage}".
+Reply in 1 or 2 friendly, authentic, conversational sentences, just like a real person on a casual call.
+Do NOT sound like an AI assistant or robot. Never say "As an AI". Keep it concise, natural, and warm.`,
+      });
+      const text = response.text?.trim();
+      if (text) return text;
+    } catch (err) {
+      console.warn('Gemini chat error:', err);
+    }
+  }
+
+  const fallbacks = [
+    "That is super interesting! Tell me more about that.",
+    "Haha totally, I feel you on that. How long have you been into that?",
+    "Nice! It's always cool meeting folks from different parts of the world.",
+    "I agree! That makes a lot of sense actually.",
+    "Sounds awesome. What else are you working on or thinking about today?",
+  ];
+  return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+}
+
 // Helper for matchmaking
 function tryMatchmaking() {
   // Filter queue to ensure all session IDs exist and are not already paired
@@ -213,73 +325,163 @@ function tryMatchmaking() {
     return user && !user.pairedStrangerId && !user.currentRoomId;
   });
 
-  if (waitingQueue.length < 2) return;
+  // If two or more real users are waiting, pair them immediately
+  if (waitingQueue.length >= 2) {
+    for (let i = 0; i < waitingQueue.length; i++) {
+      const userAId = waitingQueue[i];
+      const userA = usersBySession.get(userAId);
+      if (!userA) continue;
 
-  for (let i = 0; i < waitingQueue.length; i++) {
-    const userAId = waitingQueue[i];
-    const userA = usersBySession.get(userAId);
-    if (!userA) continue;
+      for (let j = i + 1; j < waitingQueue.length; j++) {
+        const userBId = waitingQueue[j];
+        const userB = usersBySession.get(userBId);
+        if (!userB) continue;
 
-    for (let j = i + 1; j < waitingQueue.length; j++) {
-      const userBId = waitingQueue[j];
-      const userB = usersBySession.get(userBId);
-      if (!userB) continue;
+        // Check not same user and neither has blocked the other
+        if (
+          userAId !== userBId &&
+          !userA.blockedUsers.has(userBId) &&
+          !userB.blockedUsers.has(userAId)
+        ) {
+          // Clear any pending AI companion timers for both
+          const timerA = aiTimers.get(userAId);
+          if (timerA) { clearTimeout(timerA); aiTimers.delete(userAId); }
+          const timerB = aiTimers.get(userBId);
+          if (timerB) { clearTimeout(timerB); aiTimers.delete(userBId); }
 
-      // Check not same user and neither has blocked the other
-      if (
-        userAId !== userBId &&
-        !userA.blockedUsers.has(userBId) &&
-        !userB.blockedUsers.has(userAId)
-      ) {
-        // Remove both from waiting queue
-        waitingQueue.splice(j, 1);
-        waitingQueue.splice(i, 1);
+          // Remove both from waiting queue
+          waitingQueue.splice(j, 1);
+          waitingQueue.splice(i, 1);
 
-        userA.pairedStrangerId = userBId;
-        userB.pairedStrangerId = userAId;
+          userA.pairedStrangerId = userBId;
+          userB.pairedStrangerId = userAId;
 
-        // User A is designated initiator (creates offer), User B answers
-        io.to(userA.socketId).emit('match:found', {
+          // User A is designated initiator (creates offer), User B answers
+          io.to(userA.socketId).emit('match:found', {
+            stranger: {
+              id: userB.sessionId,
+              name: userB.name,
+              avatarSeed: userB.avatarSeed,
+              isAiCompanion: false,
+            },
+            isInitiator: true,
+            iceServers: getIceServers(),
+          });
+
+          io.to(userB.socketId).emit('match:found', {
+            stranger: {
+              id: userA.sessionId,
+              name: userA.name,
+              avatarSeed: userA.avatarSeed,
+              isAiCompanion: false,
+            },
+            isInitiator: false,
+            iceServers: getIceServers(),
+          });
+
+          // Broadcast stats update
+          io.emit('stats:update', {
+            onlineUsers: usersBySession.size,
+            waitingUsers: waitingQueue.length,
+            activeRooms: activeRooms.size,
+          });
+
+          // Continue matching any remaining pairs
+          tryMatchmaking();
+          return;
+        }
+      }
+    }
+  }
+
+  // If only 1 user is waiting, start a 3.5-second fallback timer to pair with an AI Stranger Companion
+  // so the user is never stuck in an infinite "Searching..." state while testing alone.
+  for (const waitingId of waitingQueue) {
+    if (!aiTimers.has(waitingId)) {
+      const timer = setTimeout(() => {
+        aiTimers.delete(waitingId);
+        // Ensure user is still waiting in queue and not paired
+        const idx = waitingQueue.indexOf(waitingId);
+        if (idx === -1) return;
+
+        const user = usersBySession.get(waitingId);
+        if (!user || user.pairedStrangerId || user.currentRoomId) return;
+
+        // Remove from queue
+        waitingQueue.splice(idx, 1);
+
+        // Pick a random persona
+        const persona = AI_STRANGERS[Math.floor(Math.random() * AI_STRANGERS.length)];
+        user.pairedStrangerId = persona.id;
+
+        io.to(user.socketId).emit('match:found', {
           stranger: {
-            id: userB.sessionId,
-            name: userB.name,
-            avatarSeed: userB.avatarSeed,
+            id: persona.id,
+            name: persona.name,
+            avatarSeed: persona.avatarSeed,
+            isAiCompanion: true,
+            bio: persona.bio,
           },
           isInitiator: true,
           iceServers: getIceServers(),
         });
 
-        io.to(userB.socketId).emit('match:found', {
-          stranger: {
-            id: userA.sessionId,
-            name: userA.name,
-            avatarSeed: userA.avatarSeed,
-          },
-          isInitiator: false,
-          iceServers: getIceServers(),
-        });
-
-        // Broadcast stats update reflecting users leaving waiting queue
+        // Broadcast stats
         io.emit('stats:update', {
           onlineUsers: usersBySession.size,
           waitingUsers: waitingQueue.length,
           activeRooms: activeRooms.size,
         });
 
-        // Continue matching other pairs
-        tryMatchmaking();
-        return;
-      }
+        // Send warm initial greeting message from stranger after 1 second
+        setTimeout(() => {
+          if (user.pairedStrangerId === persona.id) {
+            io.to(user.socketId).emit('peer:speaking', {
+              userId: persona.id,
+              isSpeaking: true,
+            });
+
+            setTimeout(() => {
+              if (user.pairedStrangerId === persona.id) {
+                io.to(user.socketId).emit('random:chat', {
+                  id: `msg-greet-${Date.now()}`,
+                  senderId: persona.id,
+                  senderName: persona.name,
+                  text: persona.initialGreeting,
+                  timestamp: Date.now(),
+                });
+                io.to(user.socketId).emit('peer:speaking', {
+                  userId: persona.id,
+                  isSpeaking: false,
+                });
+              }
+            }, 1000);
+          }
+        }, 1200);
+      }, 3500);
+
+      aiTimers.set(waitingId, timer);
     }
   }
 }
 
 // Clean up user from active random talk pair
 function breakPair(user: ConnectedUser, notifyReason: string = 'stranger-left') {
+  const pendingTimer = aiTimers.get(user.sessionId);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    aiTimers.delete(user.sessionId);
+  }
+
   if (!user.pairedStrangerId) return;
 
   const strangerId = user.pairedStrangerId;
   user.pairedStrangerId = null;
+
+  if (strangerId.startsWith('ai-')) {
+    // AI Stranger left
+    return;
+  }
 
   const stranger = usersBySession.get(strangerId);
   if (stranger) {
@@ -489,20 +691,67 @@ io.on('connection', (socket: Socket) => {
   });
 
   // 7. Instant In-Call Text Chat for Random Talk
-  socket.on('random:chat', (data: { text: string }) => {
+  socket.on('random:chat', async (data: { text: string }) => {
     const user = ensureCurrentUser();
     if (!user.pairedStrangerId || !data.text) return;
+
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      senderId: user.sessionId,
+      senderName: user.name,
+      text: data.text.slice(0, 500),
+      timestamp: Date.now(),
+    };
+
+    // If paired with an AI Stranger Companion
+    if (user.pairedStrangerId.startsWith('ai-')) {
+      const persona = AI_STRANGERS.find(p => p.id === user.pairedStrangerId) || AI_STRANGERS[0];
+      // Echo user message to client
+      socket.emit('random:chat', userMsg);
+
+      // Indicate typing / speaking state
+      setTimeout(() => {
+        if (user.pairedStrangerId === persona.id) {
+          socket.emit('peer:speaking', {
+            userId: persona.id,
+            isSpeaking: true,
+          });
+        }
+      }, 300);
+
+      try {
+        const replyText = await generateAiStrangerReply(persona, data.text);
+        setTimeout(() => {
+          if (user.pairedStrangerId === persona.id) {
+            const aiMsg: ChatMessage = {
+              id: `msg-ai-${Date.now()}`,
+              senderId: persona.id,
+              senderName: persona.name,
+              text: replyText,
+              timestamp: Date.now(),
+            };
+            socket.emit('random:chat', aiMsg);
+            socket.emit('peer:speaking', {
+              userId: persona.id,
+              isSpeaking: false,
+            });
+          }
+        }, 1100);
+      } catch (err) {
+        console.warn('Error generating AI reply:', err);
+        socket.emit('peer:speaking', {
+          userId: persona.id,
+          isSpeaking: false,
+        });
+      }
+      return;
+    }
+
+    // Regular human-to-human peer chat
     const stranger = usersBySession.get(user.pairedStrangerId);
     if (stranger) {
-      const msg: ChatMessage = {
-        id: `msg-${Math.random().toString(36).substring(2, 9)}`,
-        senderId: user.sessionId,
-        senderName: user.name,
-        text: data.text.slice(0, 500),
-        timestamp: Date.now(),
-      };
-      io.to(stranger.socketId).emit('random:chat', msg);
-      socket.emit('random:chat', msg);
+      io.to(stranger.socketId).emit('random:chat', userMsg);
+      socket.emit('random:chat', userMsg);
     }
   });
 
@@ -798,12 +1047,70 @@ io.on('connection', (socket: Socket) => {
     io.to(room.id).emit('room:chat-message', message);
   });
 
+  // Room Creator Controls: Add simulated guest for testing
+  socket.on('room:add-guest', () => {
+    const user = ensureCurrentUser();
+    if (!user.currentRoomId) return;
+    const room = activeRooms.get(user.currentRoomId);
+    if (!room) return;
+
+    if (room.participants.length >= room.maxParticipants) {
+      return socket.emit('room:error', { message: 'Room has reached maximum capacity.' });
+    }
+
+    const guestNames = ['Maya (Tokyo)', 'Alex (London)', 'Elena (Barcelona)', 'Sam (SF)', 'Liam (Melb)'];
+    const randomGuestName = guestNames[Math.floor(Math.random() * guestNames.length)];
+    const guestId = `guest-${Math.random().toString(36).substring(2, 7)}`;
+
+    const guestParticipant: RoomParticipant = {
+      id: guestId,
+      socketId: `mock-sock-${guestId}`,
+      name: randomGuestName,
+      isMuted: false,
+      isVideoOff: true,
+      isSpeaking: false,
+      isCreator: false,
+      joinedAt: Date.now(),
+    };
+
+    room.participants.push(guestParticipant);
+
+    io.to(room.id).emit('room:user-joined', {
+      participant: guestParticipant,
+      totalCount: room.participants.length,
+    });
+
+    // Simulated welcome chat message
+    setTimeout(() => {
+      const welcomeMsg: ChatMessage = {
+        id: `msg-${Date.now()}`,
+        senderId: guestId,
+        senderName: randomGuestName,
+        text: "Hey everyone! Glad to join the room.",
+        timestamp: Date.now(),
+      };
+      io.to(room.id).emit('room:chat-message', welcomeMsg);
+    }, 800);
+  });
+
   // Room Creator Controls: Kick participant
   socket.on('room:kick-participant', (data: { targetUserId: string }) => {
     const user = ensureCurrentUser();
     if (!user.currentRoomId) return;
     const room = activeRooms.get(user.currentRoomId);
     if (!room || room.creatorId !== user.sessionId) return;
+
+    // Check if target is a simulated guest
+    const guestIdx = room.participants.findIndex(p => p.id === data.targetUserId);
+    if (guestIdx !== -1 && data.targetUserId.startsWith('guest-')) {
+      room.participants.splice(guestIdx, 1);
+      io.to(room.id).emit('room:user-left', {
+        userId: data.targetUserId,
+        reason: 'removed',
+        totalCount: room.participants.length,
+      });
+      return;
+    }
 
     const targetUser = usersBySession.get(data.targetUserId);
     if (targetUser && targetUser.currentRoomId === room.id) {

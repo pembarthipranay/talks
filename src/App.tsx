@@ -121,14 +121,9 @@ export default function App() {
   };
 
   const handleJoinRoom = (roomId: string, token?: string) => {
-    if (isStreamValid(localStream)) {
-      setActiveRoomId(roomId);
-      setActiveRoomToken(token);
-      setCurrentView('room-active');
-    } else {
-      setPendingAction({ type: 'join-room', roomId, token });
-      setIsPermissionsOpen(true);
-    }
+    setActiveRoomId(roomId);
+    setActiveRoomToken(token);
+    setCurrentView('room-active');
   };
 
   const handlePermissionsReady = (stream: MediaStream) => {

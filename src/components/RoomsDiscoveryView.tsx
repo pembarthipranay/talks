@@ -77,22 +77,44 @@ export const RoomsDiscoveryView: React.FC<RoomsDiscoveryViewProps> = ({
     };
   }, [socket, onJoinRoom]);
 
-  const handleCreateRoom = (e: React.FormEvent) => {
+  const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoomName.trim()) return;
     setIsCreating(true);
     setCreateError(null);
 
-    if (!socket.connected) {
-      socket.connect();
-    }
-
-    socket.emit('room:create', {
+    const payload = {
       name: newRoomName.trim(),
       description: newRoomDesc.trim(),
       type: newRoomType,
       maxParticipants: Number(newRoomCapacity) || 12,
-    });
+    };
+
+    try {
+      // Direct REST API creation ensures 100% reliable room creation
+      const res = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.room) {
+          setIsCreating(false);
+          setIsCreateOpen(false);
+          onJoinRoom(data.room.id, data.room.token);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('REST room creation fallback to socket:', err);
+    }
+
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.emit('room:create', payload);
   };
 
   const handleJoinPrivate = (e: React.FormEvent) => {
