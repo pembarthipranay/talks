@@ -264,6 +264,20 @@ app.post('/api/rooms', (req, res) => {
     activeRooms: activeRooms.size,
   });
 
+  const roomSessionId = `sess-room-${roomId}`;
+  serverSaveSessionStart({
+    id: roomSessionId,
+    sessionId: roomSessionId,
+    type: roomType === 'private' ? 'private_room' : 'public_room',
+    roomId,
+    participantCount: 1,
+    participants: `${roomName} (Created by ${creatorId || 'Host'})`,
+    startedAt: new Date().toISOString(),
+    status: 'active',
+    durationSeconds: 0,
+    createdAt: Date.now(),
+  });
+
   res.json({ status: 'ok', room: newRoom });
 });
 
@@ -317,11 +331,15 @@ async function serverSaveSessionEnd(sessionId: string, durationSeconds?: number)
 
   try {
     const docRef = doc(serverDb, 'sessions', sessionId);
-    await updateDoc(docRef, {
-      endedAt: nowIso,
-      status: 'completed',
-      durationSeconds: finalDuration || 1,
-    });
+    await setDoc(
+      docRef,
+      {
+        endedAt: nowIso,
+        status: 'completed',
+        durationSeconds: finalDuration || 1,
+      },
+      { merge: true }
+    );
     console.log(`[Server Firestore] 🏁 Recorded session end: ${sessionId} (${finalDuration}s)`);
   } catch (err) {
     console.warn(`[Server Firestore] Note saving end ${sessionId}:`, err);
@@ -352,14 +370,15 @@ app.get('/api/admin/sessions', async (req, res) => {
 
   // Refresh directly from Cloud Firestore into in-memory map
   try {
-    const q = query(collection(serverDb, 'sessions'), orderBy('createdAt', 'desc'), limit(100));
-    const snap = await getDocs(q);
-    trackedSessions.clear();
+    const snap = await getDocs(collection(serverDb, 'sessions'));
     snap.forEach((d) => {
       const data = d.data() as ServerCallSession;
-      // Filter out any legacy dummy/sample documents - strictly real-time data only
-      if (!d.id.startsWith('sess-live-') && !d.id.includes('test') && !d.id.includes('sample')) {
-        trackedSessions.set(d.id, { ...data, id: d.id });
+      if (d.id && !d.id.startsWith('test-probe-')) {
+        trackedSessions.set(d.id, {
+          ...data,
+          id: d.id,
+          sessionId: data.sessionId || d.id,
+        });
       }
     });
   } catch (err) {
@@ -367,8 +386,8 @@ app.get('/api/admin/sessions', async (req, res) => {
   }
 
   const sessions = Array.from(trackedSessions.values())
-    .filter((s) => !s.id.startsWith('sess-live-') && !s.id.includes('test') && !s.id.includes('sample'))
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .filter((s) => s.id && !s.id.startsWith('test-probe-'))
+    .sort((a, b) => (b.createdAt || new Date(b.startedAt).getTime() || 0) - (a.createdAt || new Date(a.startedAt).getTime() || 0));
 
   res.json({
     sessions,
@@ -383,9 +402,8 @@ app.post('/api/admin/sessions', async (req, res) => {
   const { sessionId, type, roomId, participants, participantCount, startedAt, status } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
 
-  // Only store real sessions
-  if (sessionId.startsWith('sess-live-') || sessionId.includes('test') || sessionId.includes('sample')) {
-    return res.status(400).json({ error: 'Dummy data generation disabled. Only real sessions allowed.' });
+  if (sessionId.startsWith('test-probe-')) {
+    return res.status(400).json({ error: 'Probe ignored' });
   }
 
   const sessionObj: ServerCallSession = {
@@ -1163,6 +1181,20 @@ io.on('connection', (socket: Socket) => {
       onlineUsers: usersBySession.size,
       waitingUsers: waitingQueue.length,
       activeRooms: activeRooms.size,
+    });
+
+    const roomSessionId = `sess-room-${roomId}`;
+    serverSaveSessionStart({
+      id: roomSessionId,
+      sessionId: roomSessionId,
+      type: type === 'private' ? 'private_room' : 'public_room',
+      roomId,
+      participantCount: 1,
+      participants: `${name} (Created by ${user.name})`,
+      startedAt: new Date().toISOString(),
+      status: 'active',
+      durationSeconds: 0,
+      createdAt: Date.now(),
     });
   });
 

@@ -29,6 +29,46 @@ export default function App() {
   const [isPermissionsOpen, setIsPermissionsOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [isAdminVisible, setIsAdminVisible] = useState<boolean>(() => {
+    try {
+      const isDeviceAdmin = localStorage.getItem('rt_is_admin_device') === 'true';
+      const hasPasscode = Boolean(sessionStorage.getItem('rt_admin_passcode'));
+      const hashStr = window.location.hash.toLowerCase();
+      const searchStr = window.location.search.toLowerCase();
+      return (
+        isDeviceAdmin ||
+        hasPasscode ||
+        hashStr.includes('admin') ||
+        searchStr.includes('admin=true') ||
+        searchStr.includes('key=admin2026')
+      );
+    } catch {
+      return false;
+    }
+  });
+  const [adminNotice, setAdminNotice] = useState<string | null>(null);
+
+  const handleRevealAdmin = () => {
+    setIsAdminVisible(true);
+    try {
+      localStorage.setItem('rt_is_admin_device', 'true');
+    } catch {}
+    setAdminNotice('Admin Mode active: Admin button is now visible on this device.');
+    setTimeout(() => setAdminNotice(null), 4000);
+    setIsAdminOpen(true);
+  };
+
+  const handleHideAdminMode = () => {
+    setIsAdminVisible(false);
+    try {
+      localStorage.removeItem('rt_is_admin_device');
+      sessionStorage.removeItem('rt_admin_passcode');
+    } catch {}
+    setIsAdminOpen(false);
+    setAdminNotice('Admin Mode hidden: Admin button is now hidden.');
+    setTimeout(() => setAdminNotice(null), 3000);
+  };
+
   const [pendingAction, setPendingAction] = useState<
     | { type: 'random-talk' }
     | { type: 'join-room'; roomId: string; token?: string }
@@ -118,10 +158,14 @@ export default function App() {
       const searchParams = new URLSearchParams(window.location.search);
       const targetRoom = hashParams.get('room') || searchParams.get('room');
       const targetToken = hashParams.get('token') || searchParams.get('token');
-      const isAdminRequested = hashStr.includes('admin') || searchParams.get('admin') === 'true';
+      const isAdminRequested =
+        hashStr.includes('admin') ||
+        searchParams.get('admin') === 'true' ||
+        searchParams.get('key') === 'admin2026' ||
+        hashStr.includes('admin2026');
 
       if (isAdminRequested) {
-        setIsAdminOpen(true);
+        handleRevealAdmin();
       }
 
       if (targetRoom) {
@@ -132,6 +176,33 @@ export default function App() {
     } catch (e) {
       console.warn('Could not parse room URL parameter:', e);
     }
+  }, []);
+
+  // Global keyboard shortcut (Ctrl+Shift+A or Alt+A) & hash change listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) ||
+        (e.altKey && (e.key === 'A' || e.key === 'a'))
+      ) {
+        e.preventDefault();
+        handleRevealAdmin();
+      }
+    };
+
+    const handleHashChange = () => {
+      const hash = window.location.hash.toLowerCase();
+      if (hash.includes('admin')) {
+        handleRevealAdmin();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('hashchange', handleHashChange);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('hashchange', handleHashChange);
+    };
   }, []);
 
   // Request permissions flow - verify stream tracks are live
@@ -217,7 +288,17 @@ export default function App() {
         stats={stats}
         onOpenPrivacy={() => setIsPrivacyOpen(true)}
         onOpenAdmin={() => setIsAdminOpen(true)}
+        isAdminVisible={isAdminVisible}
+        onRevealAdmin={handleRevealAdmin}
       />
+
+      {/* Admin Mode Floating Notice */}
+      {adminNotice && (
+        <div className="fixed top-20 right-4 z-50 bg-[#0d1222]/95 border border-violet-500/40 text-violet-200 px-4 py-2.5 rounded-2xl shadow-2xl backdrop-blur-xl text-xs flex items-center gap-2.5 animate-in slide-in-from-top-2 duration-200">
+          <Database className="w-4 h-4 text-violet-400 shrink-0" />
+          <span className="font-medium">{adminNotice}</span>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className={`flex-1 flex flex-col relative ${currentView === 'landing' || currentView === 'rooms-discovery' ? 'pb-16 md:pb-0' : ''}`}>
@@ -227,6 +308,7 @@ export default function App() {
             onExploreRooms={() => setCurrentView('rooms-discovery')}
             stats={stats}
             onOpenAdmin={() => setIsAdminOpen(true)}
+            isAdminVisible={isAdminVisible}
           />
         )}
 
@@ -301,16 +383,20 @@ export default function App() {
             <span className="text-[10px] font-mono">Privacy</span>
           </button>
 
-          <button
-            onClick={() => setIsAdminOpen(true)}
-            className="flex flex-col items-center gap-1 py-1 px-3 rounded-xl text-slate-400 hover:text-white transition-all relative"
-          >
-            <div className="relative">
-              <Database className="w-5 h-5 text-violet-400" />
-              <Lock className="w-2.5 h-2.5 text-slate-400 absolute -top-1 -right-1" />
-            </div>
-            <span className="text-[10px] font-mono">Admin</span>
-          </button>
+          {/* Admin Tab - ONLY visible to the administrator on their device, completely hidden from other users */}
+          {isAdminVisible && (
+            <button
+              onClick={() => setIsAdminOpen(true)}
+              className="flex flex-col items-center gap-1 py-1 px-3 rounded-xl text-violet-300 hover:text-white transition-all relative animate-in fade-in"
+              title="Admin Panel (Admin Only)"
+            >
+              <div className="relative">
+                <Database className="w-5 h-5 text-violet-400" />
+                <span className="w-2 h-2 rounded-full bg-emerald-400 absolute -top-1 -right-1 border border-[#0a0d17] animate-pulse" />
+              </div>
+              <span className="text-[10px] font-mono">Admin</span>
+            </button>
+          )}
         </nav>
       )}
 
@@ -334,6 +420,9 @@ export default function App() {
       <AdminPanel
         isOpen={isAdminOpen}
         onClose={() => setIsAdminOpen(false)}
+        socket={socket}
+        onHideAdminMode={handleHideAdminMode}
+        onAdminUnlocked={handleRevealAdmin}
       />
     </div>
   );

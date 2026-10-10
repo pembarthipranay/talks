@@ -8,6 +8,7 @@ interface LandingHeroProps {
   onExploreRooms: () => void;
   stats: ServerStats;
   onOpenAdmin?: () => void;
+  isAdminVisible?: boolean;
 }
 
 export const LandingHero: React.FC<LandingHeroProps> = ({
@@ -15,6 +16,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
   onExploreRooms,
   stats,
   onOpenAdmin,
+  isAdminVisible = false,
 }) => {
   return (
     <div className="relative min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] flex flex-col justify-between overflow-hidden">
@@ -70,10 +72,10 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
             <span>EXPLORE ROOMS</span>
           </button>
 
-          {onOpenAdmin && (
+          {isAdminVisible && onOpenAdmin && (
             <button
               onClick={onOpenAdmin}
-              className="w-full sm:w-auto px-5 sm:px-6 py-3.5 sm:py-4 rounded-2xl bg-white/[0.03] hover:bg-white/[0.08] text-slate-300 hover:text-white font-semibold text-sm sm:text-lg tracking-wide backdrop-blur-xl border border-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2.5 sm:gap-3 cursor-pointer"
+              className="w-full sm:w-auto px-5 sm:px-6 py-3.5 sm:py-4 rounded-2xl bg-violet-950/30 hover:bg-violet-900/40 text-violet-300 hover:text-white font-semibold text-sm sm:text-lg tracking-wide backdrop-blur-xl border border-violet-500/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2.5 sm:gap-3 cursor-pointer shadow-lg animate-in fade-in"
               title="View live sessions, call duration, and database stats"
             >
               <Database className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400" />

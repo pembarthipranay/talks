@@ -8,6 +8,8 @@ interface NavbarProps {
   stats: ServerStats;
   onOpenPrivacy: () => void;
   onOpenAdmin: () => void;
+  isAdminVisible?: boolean;
+  onRevealAdmin?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -16,8 +18,28 @@ export const Navbar: React.FC<NavbarProps> = ({
   stats,
   onOpenPrivacy,
   onOpenAdmin,
+  isAdminVisible = false,
+  onRevealAdmin,
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [clickCount, setClickCount] = useState(0);
+  const [lastClickTime, setLastClickTime] = useState(0);
+
+  const handleLogoClick = () => {
+    const now = Date.now();
+    if (now - lastClickTime < 1500) {
+      const next = clickCount + 1;
+      setClickCount(next);
+      if (next >= 3) {
+        setClickCount(0);
+        onRevealAdmin?.();
+      }
+    } else {
+      setClickCount(1);
+    }
+    setLastClickTime(now);
+    onNavigate('landing');
+  };
 
   const handleMobileNav = (view: AppView) => {
     setIsMobileMenuOpen(false);
@@ -30,8 +52,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Brand Logo */}
         <div className="flex items-center gap-4 sm:gap-8">
           <button
-            onClick={() => onNavigate('landing')}
-            className="flex items-center gap-2.5 sm:gap-3 text-left group focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg p-1"
+            onClick={handleLogoClick}
+            className="flex items-center gap-2.5 sm:gap-3 text-left group focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg p-1 cursor-pointer select-none"
+            title="RANDOMTALKS Home"
           >
             <div className="relative w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-tr from-violet-600 to-cyan-400 p-[1px] flex items-center justify-center shadow-lg shadow-violet-900/30 group-hover:scale-105 transition-transform shrink-0">
               <div className="w-full h-full rounded-full bg-[#090b12] flex items-center justify-center">
@@ -85,15 +108,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                 No-Account Privacy
               </span>
             </button>
-            <button
-              onClick={onOpenAdmin}
-              className="px-3 py-1.5 rounded-full text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 transition-all flex items-center gap-1.5"
-              title="Admin Database Panel (Admin Only)"
-            >
-              <Database className="w-3.5 h-3.5 text-violet-400" />
-              <span>Admin</span>
-              <Lock className="w-3 h-3 text-slate-500" />
-            </button>
+
+            {/* Admin Button - ONLY visible to the administrator, hidden from others */}
+            {isAdminVisible && (
+              <button
+                onClick={onOpenAdmin}
+                className="px-3 py-1.5 rounded-full text-sm font-medium text-violet-300 bg-violet-950/40 border border-violet-500/30 hover:bg-violet-900/50 hover:text-white transition-all flex items-center gap-1.5 shadow-sm animate-in fade-in"
+                title="Admin Database Panel (Admin Only)"
+              >
+                <Database className="w-3.5 h-3.5 text-violet-400" />
+                <span>Admin</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              </button>
+            )}
           </nav>
         </div>
 
@@ -178,22 +205,25 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="text-[10px] font-mono text-emerald-400">0 Data Stored</span>
           </button>
 
-          <button
-            onClick={() => {
-              setIsMobileMenuOpen(false);
-              onOpenAdmin();
-            }}
-            className="w-full flex items-center justify-between p-3 rounded-xl text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
-          >
-            <div className="flex items-center gap-2.5">
-              <Database className="w-4 h-4 text-violet-400" />
-              <span>Admin Database</span>
-            </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 flex items-center gap-1">
-              <Lock className="w-2.5 h-2.5" />
-              Admin Only
-            </span>
-          </button>
+          {/* Admin Database - ONLY visible to the administrator */}
+          {isAdminVisible && (
+            <button
+              onClick={() => {
+                setIsMobileMenuOpen(false);
+                onOpenAdmin();
+              }}
+              className="w-full flex items-center justify-between p-3 rounded-xl text-sm font-medium text-violet-200 bg-violet-950/30 border border-violet-500/20 hover:bg-violet-900/40 transition-colors"
+            >
+              <div className="flex items-center gap-2.5">
+                <Database className="w-4 h-4 text-violet-400" />
+                <span>Admin Database</span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Admin Active
+              </span>
+            </button>
+          )}
 
           {/* Mobile Live Activity Strip */}
           <div className="pt-2 border-t border-white/5 flex items-center justify-between text-xs text-slate-400 font-mono px-1">

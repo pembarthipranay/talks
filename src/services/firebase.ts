@@ -111,10 +111,10 @@ export async function saveSessionEnd(
     updateData.durationSeconds = Math.max(1, Math.round(durationSeconds));
   }
 
-  // 1. Update in Cloud Firestore
+  // 1. Update in Cloud Firestore with setDoc merge (safe against non-existent doc errors)
   try {
     const sessionRef = doc(db, 'sessions', sessionId);
-    await updateDoc(sessionRef, updateData);
+    await setDoc(sessionRef, updateData, { merge: true });
     console.log(`[Firestore] 🏁 Session ended recorded: ${sessionId} (duration: ${durationSeconds}s)`);
   } catch (err) {
     console.warn('[Firestore] Note saving session end:', err);
@@ -148,17 +148,14 @@ export async function verifyAdminKey(adminKey: string): Promise<boolean> {
 }
 
 /**
- * Filter out any mock/test/dummy session records - strictly real-time data only
+ * Filter to ensure session record is valid - preserves all authentic user sessions
  */
 function isGenuineRealtimeSession(s: Partial<CallSessionRecord>): boolean {
-  if (!s || !s.sessionId) return false;
-  const id = s.sessionId;
-  // Discard any dummy or sample generated records
-  if (id.startsWith('sess-live-') || id.includes('test') || id.includes('sample') || id.includes('mock')) {
-    return false;
-  }
-  // Discard if fake test participants
-  if (typeof s.participants === 'string' && /Stranger \d+ & Stranger \d+/.test(s.participants)) {
+  if (!s || typeof s !== 'object') return false;
+  const id = s.sessionId || s.id;
+  if (!id || typeof id !== 'string') return false;
+  // Only discard internal automated test probe pings
+  if (id.startsWith('test-probe-')) {
     return false;
   }
   return true;
@@ -192,11 +189,7 @@ export function subscribeToSessions(
   // 2. Real-time Cloud Firestore onSnapshot listener
   let unsubscribeFirestore = () => {};
   try {
-    const q = query(
-      collection(db, 'sessions'),
-      orderBy('createdAt', 'desc'),
-      limit(100)
-    );
+    const q = collection(db, 'sessions');
 
     unsubscribeFirestore = onSnapshot(
       q,
@@ -206,12 +199,15 @@ export function subscribeToSessions(
         snapshot.forEach((d) => {
           const item = {
             id: d.id,
+            sessionId: d.id,
             ...(d.data() as Omit<CallSessionRecord, 'id'>),
           };
           if (isGenuineRealtimeSession(item)) {
             records.push(item);
           }
         });
+        // Sort newest first
+        records.sort((a, b) => (b.createdAt || new Date(b.startedAt).getTime() || 0) - (a.createdAt || new Date(a.startedAt).getTime() || 0));
         callback(records);
       },
       (error) => {
@@ -251,10 +247,9 @@ export async function fetchRealtimeSessions(adminKey?: string): Promise<CallSess
 
   // 1. Fetch direct from Cloud Firestore
   try {
-    const q = query(collection(db, 'sessions'), orderBy('createdAt', 'desc'), limit(100));
-    const snap = await getDocs(q);
+    const snap = await getDocs(collection(db, 'sessions'));
     snap.forEach((d) => {
-      const record = { id: d.id, ...(d.data() as Omit<CallSessionRecord, 'id'>) };
+      const record = { id: d.id, sessionId: d.id, ...(d.data() as Omit<CallSessionRecord, 'id'>) };
       if (isGenuineRealtimeSession(record)) {
         recordsMap.set(d.id, record);
       }
@@ -263,7 +258,7 @@ export async function fetchRealtimeSessions(adminKey?: string): Promise<CallSess
     console.warn('[Firestore] Manual fetch warning:', err);
   }
 
-  // 2. Fetch from Server API
+  // 2. Fetch from Server API with cache busting
   try {
     const headers: Record<string, string> = { 'Cache-Control': 'no-cache' };
     if (adminKey) headers['x-admin-key'] = adminKey;
@@ -274,7 +269,8 @@ export async function fetchRealtimeSessions(adminKey?: string): Promise<CallSess
       if (data?.sessions && Array.isArray(data.sessions)) {
         data.sessions.forEach((s: CallSessionRecord) => {
           if (isGenuineRealtimeSession(s)) {
-            recordsMap.set(s.sessionId || s.id, s);
+            const key = s.sessionId || s.id;
+            recordsMap.set(key, s);
           }
         });
       }
@@ -283,7 +279,9 @@ export async function fetchRealtimeSessions(adminKey?: string): Promise<CallSess
     console.warn('[Server API] Manual fetch warning:', e);
   }
 
-  return Array.from(recordsMap.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return Array.from(recordsMap.values()).sort(
+    (a, b) => (b.createdAt || new Date(b.startedAt).getTime() || 0) - (a.createdAt || new Date(a.startedAt).getTime() || 0)
+  );
 }
 
 /**

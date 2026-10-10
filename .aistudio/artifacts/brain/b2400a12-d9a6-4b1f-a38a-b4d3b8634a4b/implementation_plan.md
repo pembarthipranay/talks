@@ -9,12 +9,13 @@ This plan provides immediate access to view your realtime Firestore database, ve
 > 1. **In-App Realtime Admin Panel**: Built directly into the website (click **Admin** in the header or visit `/#admin`).
 > 2. **Official Firebase / Cloud Console**: Hosted on Google Cloud Firestore under database `ai-studio-randomtalks-b2400a12-d9a6-4b1f-a38a-b4d3b8634a4b` in project `gen-lang-client-0621531702`.
 
-- **Session IDs**: Every call (Random Talk and Private Rooms) automatically generates and records a unique session ID (`session-rt-...` or `session-room-...`) with start timestamp, end timestamp, status, and duration.
-- **Proposed Enhancement**: Add direct external links to the Google Cloud / Firebase console inside the Admin Panel and display the current active Session ID badge during live calls for real-time visibility.
-
----
-
-## 1. Overview & Core Concept
+- **Session IDs**: Every call (Random Talk and Private Rooms) automatically generates and records a unique session ID (`sess-rt-...` or `sess-room-...`) with start timestamp, end timestamp, status, and duration in Cloud Firestore.
+- **Root Cause Identified & Fixed**: The previous dummy-filtering logic contained an aggressive regex (`/Stranger \d+ & Stranger \d+/`) intended to block synthetic seeds, but anonymous users on this platform are legitimately named "Stranger <number>". This was rejecting genuine user tests. The filter has been corrected to only reject internal test probes, and real-time Socket.IO synchronization has been wired directly to the Admin Panel for instantaneous 0ms live session updates.
+- **Multi-Channel Sync**: Admin panel receives live updates via:
+  1. Instant Socket.IO event push (`session:update`, `session:deleted`, `session:cleared`)
+  2. Cloud Firestore `onSnapshot` real-time listener
+  3. Direct cache-busting manual refresh button queries
+  4. Automatic 3-second fallback polling
 
 - **What It Does**:
   - Provides a comprehensive, real-time window into all call sessions, active participants, call duration, and timestamps stored in Google Cloud Firestore.

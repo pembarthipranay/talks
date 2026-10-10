@@ -23,6 +23,7 @@ import {
   KeyRound,
   AlertCircle,
 } from 'lucide-react';
+import { Socket } from 'socket.io-client';
 import { CallSessionRecord } from '../types.ts';
 import {
   subscribeToSessions,
@@ -38,9 +39,18 @@ import {
 interface AdminPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  socket?: Socket | null;
+  onHideAdminMode?: () => void;
+  onAdminUnlocked?: () => void;
 }
 
-export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
+export const AdminPanel: React.FC<AdminPanelProps> = ({
+  isOpen,
+  onClose,
+  socket,
+  onHideAdminMode,
+  onAdminUnlocked,
+}) => {
   const [sessions, setSessions] = useState<CallSessionRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -92,6 +102,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     };
   }, [isOpen, isUnlocked, adminKey]);
 
+  // Instant 0-latency live push updates via Socket.IO
+  useEffect(() => {
+    if (!socket || !isUnlocked || !isOpen) return;
+
+    const handleSessionUpdate = (updated: CallSessionRecord) => {
+      setSessions((prev) => {
+        const id = updated.sessionId || updated.id;
+        const exists = prev.some((s) => (s.sessionId || s.id) === id);
+        if (exists) {
+          return prev.map((s) => ((s.sessionId || s.id) === id ? updated : s));
+        }
+        return [updated, ...prev];
+      });
+      setIsLoading(false);
+      setLastRefreshedAt(new Date());
+    };
+
+    const handleSessionDeleted = (data: { id: string }) => {
+      setSessions((prev) => prev.filter((s) => (s.sessionId || s.id) !== data.id));
+    };
+
+    const handleSessionCleared = () => {
+      setSessions([]);
+    };
+
+    socket.on('session:update', handleSessionUpdate);
+    socket.on('session:deleted', handleSessionDeleted);
+    socket.on('session:cleared', handleSessionCleared);
+
+    return () => {
+      socket.off('session:update', handleSessionUpdate);
+      socket.off('session:deleted', handleSessionDeleted);
+      socket.off('session:cleared', handleSessionCleared);
+    };
+  }, [socket, isOpen, isUnlocked]);
+
   // Robust manual refresh handler
   const handleManualRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -131,9 +177,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       if (isValid) {
         const key = pinInput.trim();
         sessionStorage.setItem('rt_admin_passcode', key);
+        try {
+          localStorage.setItem('rt_is_admin_device', 'true');
+        } catch {}
         setAdminKey(key);
         setIsUnlocked(true);
         setPinInput('');
+        onAdminUnlocked?.();
       } else {
         setPinError('Incorrect administrator key. Access denied.');
       }
@@ -150,6 +200,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     setAdminKey('');
     setIsUnlocked(false);
     setSessions([]);
+  };
+
+  // Hide admin mode and button from this browser
+  const handleHideAdminMode = () => {
+    try {
+      localStorage.removeItem('rt_is_admin_device');
+      sessionStorage.removeItem('rt_admin_passcode');
+    } catch {}
+    setAdminKey('');
+    setIsUnlocked(false);
+    setSessions([]);
+    onHideAdminMode?.();
+    onClose();
   };
 
   // Copy helper
@@ -340,9 +403,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 </>
               )}
             </button>
+            <div className="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onClick={handleHideAdminMode}
+                className="text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+                <span>Hide Admin Button from UI</span>
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
           </form>
 
-          <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
+          <div className="mt-5 pt-3 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
             <span>Project: {FIREBASE_CONFIG.projectId}</span>
             <span>Zero dummy data • Real-time logs</span>
           </div>
@@ -399,16 +479,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
               {/* Lock / Log Out Button */}
               <button
                 onClick={handleLockPanel}
-                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-amber-300 border border-white/10 transition-colors text-xs flex items-center gap-1.5"
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-amber-300 border border-white/10 transition-colors text-xs flex items-center gap-1.5 cursor-pointer"
                 title="Lock panel and require passcode"
               >
                 <Lock className="w-4 h-4" />
                 <span className="hidden sm:inline font-medium">Lock</span>
               </button>
 
+              {/* Hide Admin Button from UI */}
+              <button
+                onClick={handleHideAdminMode}
+                className="p-2 rounded-xl bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-300 border border-white/10 transition-colors text-xs flex items-center gap-1.5 cursor-pointer"
+                title="Hide Admin button from UI on this device (restorable via #admin or Ctrl+Shift+A)"
+              >
+                <EyeOff className="w-4 h-4" />
+                <span className="hidden sm:inline font-medium">Hide Admin</span>
+              </button>
+
               <button
                 onClick={onClose}
-                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 transition-colors"
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 transition-colors cursor-pointer"
                 aria-label="Close Admin Panel"
               >
                 <X className="w-5 h-5" />
