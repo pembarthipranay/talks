@@ -8,8 +8,9 @@ import { RoomsDiscoveryView } from './components/RoomsDiscoveryView.tsx';
 import { RoomView } from './components/RoomView.tsx';
 import { PermissionsModal } from './components/PermissionsModal.tsx';
 import { PrivacyNoticeModal } from './components/PrivacyNoticeModal.tsx';
+import { AdminPanel } from './components/AdminPanel.tsx';
 import { stopMediaStream } from './services/webrtc.ts';
-import { Home, Radio, Users, Shield } from 'lucide-react';
+import { Home, Radio, Users, Shield, Database, Lock } from 'lucide-react';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<AppView>('landing');
@@ -27,6 +28,7 @@ export default function App() {
   // Modals state
   const [isPermissionsOpen, setIsPermissionsOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<
     | { type: 'random-talk' }
     | { type: 'join-room'; roomId: string; token?: string }
@@ -106,6 +108,32 @@ export default function App() {
     };
   }, []);
 
+  // Auto-join if user opened an invite link (#room=... or ?room=...) or admin link (#admin)
+  useEffect(() => {
+    try {
+      const hashStr = window.location.hash.startsWith('#')
+        ? window.location.hash.slice(1)
+        : window.location.hash;
+      const hashParams = new URLSearchParams(hashStr);
+      const searchParams = new URLSearchParams(window.location.search);
+      const targetRoom = hashParams.get('room') || searchParams.get('room');
+      const targetToken = hashParams.get('token') || searchParams.get('token');
+      const isAdminRequested = hashStr.includes('admin') || searchParams.get('admin') === 'true';
+
+      if (isAdminRequested) {
+        setIsAdminOpen(true);
+      }
+
+      if (targetRoom) {
+        // Clean up URL query/hash without page reload
+        window.history.replaceState({}, document.title, window.location.pathname);
+        handleJoinRoom(targetRoom, targetToken || undefined);
+      }
+    } catch (e) {
+      console.warn('Could not parse room URL parameter:', e);
+    }
+  }, []);
+
   // Request permissions flow - verify stream tracks are live
   const isStreamValid = (stream: MediaStream | null) => {
     return Boolean(stream && stream.getTracks().length > 0 && stream.getTracks().some((t) => t.readyState === 'live'));
@@ -146,6 +174,10 @@ export default function App() {
   };
 
   const handleNavigate = (view: AppView) => {
+    if (view === 'admin') {
+      setIsAdminOpen(true);
+      return;
+    }
     if (view === 'random-talk') {
       handleStartRandomTalk();
     } else {
@@ -184,6 +216,7 @@ export default function App() {
         onNavigate={handleNavigate}
         stats={stats}
         onOpenPrivacy={() => setIsPrivacyOpen(true)}
+        onOpenAdmin={() => setIsAdminOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -193,6 +226,7 @@ export default function App() {
             onStartRandomTalk={handleStartRandomTalk}
             onExploreRooms={() => setCurrentView('rooms-discovery')}
             stats={stats}
+            onOpenAdmin={() => setIsAdminOpen(true)}
           />
         )}
 
@@ -266,6 +300,17 @@ export default function App() {
             <Shield className="w-5 h-5 text-emerald-400" />
             <span className="text-[10px] font-mono">Privacy</span>
           </button>
+
+          <button
+            onClick={() => setIsAdminOpen(true)}
+            className="flex flex-col items-center gap-1 py-1 px-3 rounded-xl text-slate-400 hover:text-white transition-all relative"
+          >
+            <div className="relative">
+              <Database className="w-5 h-5 text-violet-400" />
+              <Lock className="w-2.5 h-2.5 text-slate-400 absolute -top-1 -right-1" />
+            </div>
+            <span className="text-[10px] font-mono">Admin</span>
+          </button>
         </nav>
       )}
 
@@ -283,6 +328,12 @@ export default function App() {
       <PrivacyNoticeModal
         isOpen={isPrivacyOpen}
         onClose={() => setIsPrivacyOpen(false)}
+      />
+
+      {/* Cloud Firestore Admin Database Panel */}
+      <AdminPanel
+        isOpen={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
       />
     </div>
   );

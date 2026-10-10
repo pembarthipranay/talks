@@ -1,0 +1,19 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Sessions collection for voice/video call logs
+    match /sessions/{sessionId} {
+      allow read, write: if true;
+    }
+
+    // Health check and connection test document
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Catch-all deny for any other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

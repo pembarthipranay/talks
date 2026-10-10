@@ -1,4 +1,18 @@
-export type AppView = 'landing' | 'random-talk' | 'rooms-discovery' | 'room-active';
+export type AppView = 'landing' | 'random-talk' | 'rooms-discovery' | 'room-active' | 'admin';
+
+export interface CallSessionRecord {
+  id: string;
+  sessionId: string;
+  type: 'random_talk' | 'private_room' | 'public_room';
+  roomId?: string;
+  participantCount?: number;
+  participants?: string;
+  startedAt: string;
+  endedAt?: string;
+  durationSeconds?: number;
+  status: 'active' | 'completed' | 'abandoned';
+  createdAt: number;
+}
 
 export interface UserSession {
   id: string; // e.g. "anonymous-user-8f32a9"

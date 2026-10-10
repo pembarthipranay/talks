@@ -5,9 +5,29 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { initializeApp as initFirebaseApp, getApps, getApp } from 'firebase/app';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  collection,
+  query,
+  orderBy,
+  limit,
+} from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 import { Room, RoomParticipant, ChatMessage, ReportReason } from './src/types.ts';
 
 dotenv.config();
+
+// Initialize Firebase for server-side persistence
+const serverFirebaseApp = getApps().length === 0 ? initFirebaseApp(firebaseConfig) : getApp();
+const serverDb = firebaseConfig.firestoreDatabaseId
+  ? getFirestore(serverFirebaseApp, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(serverFirebaseApp);
 
 const app = express();
 app.set('trust proxy', 1);
@@ -36,6 +56,7 @@ interface ConnectedUser {
   avatarSeed: string;
   currentRoomId: string | null;
   pairedStrangerId: string | null;
+  activeCallSessionId?: string | null;
   isMuted: boolean;
   isVideoOff: boolean;
   isSpeaking: boolean;
@@ -246,6 +267,183 @@ app.post('/api/rooms', (req, res) => {
   res.json({ status: 'ok', room: newRoom });
 });
 
+// Admin Session Tracking & Management REST API
+interface ServerCallSession {
+  id: string;
+  sessionId: string;
+  type: 'random_talk' | 'private_room' | 'public_room';
+  roomId?: string;
+  participantCount: number;
+  participants: string;
+  startedAt: string;
+  endedAt?: string;
+  durationSeconds?: number;
+  status: 'active' | 'completed' | 'abandoned';
+  createdAt: number;
+}
+
+const trackedSessions = new Map<string, ServerCallSession>();
+
+async function serverSaveSessionStart(session: ServerCallSession) {
+  trackedSessions.set(session.id, session);
+  io.emit('session:update', session);
+  try {
+    const docRef = doc(serverDb, 'sessions', session.id);
+    await setDoc(docRef, session, { merge: true });
+    console.log(`[Server Firestore] 📝 Recorded session start: ${session.id}`);
+  } catch (err) {
+    console.warn(`[Server Firestore] Note saving start ${session.id}:`, err);
+  }
+}
+
+async function serverSaveSessionEnd(sessionId: string, durationSeconds?: number) {
+  const session = trackedSessions.get(sessionId);
+  const nowIso = new Date().toISOString();
+  let finalDuration = durationSeconds;
+
+  if (session) {
+    session.endedAt = nowIso;
+    session.status = 'completed';
+    if (typeof durationSeconds === 'number' && durationSeconds > 0) {
+      session.durationSeconds = durationSeconds;
+    } else {
+      const elapsed = Math.round((Date.now() - session.createdAt) / 1000);
+      session.durationSeconds = Math.max(1, elapsed);
+    }
+    finalDuration = session.durationSeconds;
+    trackedSessions.set(sessionId, session);
+    io.emit('session:update', session);
+  }
+
+  try {
+    const docRef = doc(serverDb, 'sessions', sessionId);
+    await updateDoc(docRef, {
+      endedAt: nowIso,
+      status: 'completed',
+      durationSeconds: finalDuration || 1,
+    });
+    console.log(`[Server Firestore] 🏁 Recorded session end: ${sessionId} (${finalDuration}s)`);
+  } catch (err) {
+    console.warn(`[Server Firestore] Note saving end ${sessionId}:`, err);
+  }
+}
+
+const ADMIN_KEY = process.env.ADMIN_KEY || 'admin2026';
+
+function isAuthorizedAdmin(req: express.Request): boolean {
+  const key = req.headers['x-admin-key'] || req.query.adminKey;
+  return key === ADMIN_KEY;
+}
+
+// Admin Passcode Verification Endpoint
+app.post('/api/admin/verify', (req, res) => {
+  const { adminKey } = req.body || {};
+  if (adminKey === ADMIN_KEY) {
+    return res.json({ ok: true, message: 'Admin verified successfully' });
+  }
+  return res.status(401).json({ ok: false, error: 'Invalid administrator key' });
+});
+
+// REST API for Admin Panel & Session Monitoring (Protected, Real-Time Only)
+app.get('/api/admin/sessions', async (req, res) => {
+  if (!isAuthorizedAdmin(req)) {
+    return res.status(401).json({ error: 'Unauthorized: Administrator access required' });
+  }
+
+  // Refresh directly from Cloud Firestore into in-memory map
+  try {
+    const q = query(collection(serverDb, 'sessions'), orderBy('createdAt', 'desc'), limit(100));
+    const snap = await getDocs(q);
+    trackedSessions.clear();
+    snap.forEach((d) => {
+      const data = d.data() as ServerCallSession;
+      // Filter out any legacy dummy/sample documents - strictly real-time data only
+      if (!d.id.startsWith('sess-live-') && !d.id.includes('test') && !d.id.includes('sample')) {
+        trackedSessions.set(d.id, { ...data, id: d.id });
+      }
+    });
+  } catch (err) {
+    console.warn('[Server Firestore] Admin query sync error:', err);
+  }
+
+  const sessions = Array.from(trackedSessions.values())
+    .filter((s) => !s.id.startsWith('sess-live-') && !s.id.includes('test') && !s.id.includes('sample'))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  res.json({
+    sessions,
+    total: sessions.length,
+    active: sessions.filter((s) => s.status === 'active').length,
+    firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+    projectId: firebaseConfig.projectId,
+  });
+});
+
+app.post('/api/admin/sessions', async (req, res) => {
+  const { sessionId, type, roomId, participants, participantCount, startedAt, status } = req.body || {};
+  if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+
+  // Only store real sessions
+  if (sessionId.startsWith('sess-live-') || sessionId.includes('test') || sessionId.includes('sample')) {
+    return res.status(400).json({ error: 'Dummy data generation disabled. Only real sessions allowed.' });
+  }
+
+  const sessionObj: ServerCallSession = {
+    id: sessionId,
+    sessionId,
+    type: type || 'random_talk',
+    roomId: roomId || '',
+    participantCount: participantCount || 2,
+    participants: participants || 'Anonymous Strangers',
+    startedAt: startedAt || new Date().toISOString(),
+    status: status || 'active',
+    durationSeconds: 0,
+    createdAt: Date.now(),
+  };
+
+  await serverSaveSessionStart(sessionObj);
+  res.json({ ok: true, session: sessionObj });
+});
+
+app.patch('/api/admin/sessions/:id', async (req, res) => {
+  const { id } = req.params;
+  const { durationSeconds } = req.body || {};
+  await serverSaveSessionEnd(id, durationSeconds);
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/sessions/:id', async (req, res) => {
+  if (!isAuthorizedAdmin(req)) {
+    return res.status(401).json({ error: 'Unauthorized: Administrator access required' });
+  }
+
+  trackedSessions.delete(req.params.id);
+  try {
+    await deleteDoc(doc(serverDb, 'sessions', req.params.id));
+  } catch (e) {
+    console.warn('Error deleting from Firestore:', e);
+  }
+  io.emit('session:deleted', { id: req.params.id });
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/sessions/clear', async (req, res) => {
+  if (!isAuthorizedAdmin(req)) {
+    return res.status(401).json({ error: 'Unauthorized: Administrator access required' });
+  }
+
+  trackedSessions.clear();
+  try {
+    const snap = await getDocs(collection(serverDb, 'sessions'));
+    const delPromises = snap.docs.map((d) => deleteDoc(d.ref));
+    await Promise.all(delPromises);
+  } catch (e) {
+    console.warn('Error clearing Firestore sessions:', e);
+  }
+  io.emit('session:cleared');
+  res.json({ ok: true });
+});
+
 // AI Strangers for instant 1-on-1 conversations when user is testing alone
 interface AiStrangerPersona {
   id: string;
@@ -372,10 +570,30 @@ function tryMatchmaking() {
     userA.pairedStrangerId = userBId;
     userB.pairedStrangerId = userAId;
 
-    console.log(`[Matchmaker] 🤝 PAIRED REAL PERSONS: "${userA.name}" (${userA.sessionId}) <---> "${userB.name}" (${userB.sessionId})`);
+    // Create shared canonical session ID in Firestore
+    const sId = `sess-rt-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+    userA.activeCallSessionId = sId;
+    userB.activeCallSessionId = sId;
+
+    const sessionObj: ServerCallSession = {
+      id: sId,
+      sessionId: sId,
+      type: 'random_talk',
+      roomId: '',
+      participantCount: 2,
+      participants: `${userA.name} & ${userB.name}`,
+      startedAt: new Date().toISOString(),
+      status: 'active',
+      durationSeconds: 0,
+      createdAt: Date.now(),
+    };
+    serverSaveSessionStart(sessionObj);
+
+    console.log(`[Matchmaker] 🤝 PAIRED REAL PERSONS: "${userA.name}" <---> "${userB.name}" (Session: ${sId})`);
 
     // User A is designated initiator (creates offer), User B answers
     io.to(userA.socketId).emit('match:found', {
+      sessionId: sId,
       stranger: {
         id: userB.sessionId,
         name: userB.name,
@@ -387,6 +605,7 @@ function tryMatchmaking() {
     });
 
     io.to(userB.socketId).emit('match:found', {
+      sessionId: sId,
       stranger: {
         id: userA.sessionId,
         name: userA.name,
@@ -408,6 +627,11 @@ function tryMatchmaking() {
 
 // Clean up user from active random talk pair
 function breakPair(user: ConnectedUser, notifyReason: string = 'stranger-left') {
+  if (user.activeCallSessionId) {
+    serverSaveSessionEnd(user.activeCallSessionId);
+    user.activeCallSessionId = null;
+  }
+
   if (!user.pairedStrangerId) return;
 
   const strangerId = user.pairedStrangerId;
@@ -419,6 +643,10 @@ function breakPair(user: ConnectedUser, notifyReason: string = 'stranger-left') 
 
   const stranger = usersBySession.get(strangerId);
   if (stranger) {
+    if (stranger.activeCallSessionId) {
+      serverSaveSessionEnd(stranger.activeCallSessionId);
+      stranger.activeCallSessionId = null;
+    }
     stranger.pairedStrangerId = null;
     io.to(stranger.socketId).emit('call:ended', {
       reason: notifyReason,
@@ -599,7 +827,26 @@ io.on('connection', (socket: Socket) => {
     const persona = AI_STRANGERS[Math.floor(Math.random() * AI_STRANGERS.length)];
     user.pairedStrangerId = persona.id;
 
+    // Record solo practice session in Firestore
+    const sId = `sess-ai-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+    user.activeCallSessionId = sId;
+
+    const sessionObj: ServerCallSession = {
+      id: sId,
+      sessionId: sId,
+      type: 'random_talk',
+      roomId: '',
+      participantCount: 2,
+      participants: `${user.name} & ${persona.name} (AI Bot Practice)`,
+      startedAt: new Date().toISOString(),
+      status: 'active',
+      durationSeconds: 0,
+      createdAt: Date.now(),
+    };
+    serverSaveSessionStart(sessionObj);
+
     socket.emit('match:found', {
+      sessionId: sId,
       stranger: {
         id: persona.id,
         name: `${persona.name} (AI Bot Practice)`,
@@ -836,11 +1083,26 @@ io.on('connection', (socket: Socket) => {
     room.participants = room.participants.filter(p => p.id !== user.sessionId);
 
     if (room.participants.length === 0) {
+      serverSaveSessionEnd(`sess-room-${room.id}`);
       // If no one is left and it's not a permanent system room, delete it
       if (!room.id.startsWith('room-latenight') && !room.id.startsWith('room-music') && !room.id.startsWith('room-tech')) {
         activeRooms.delete(room.id);
       }
     } else {
+      // Update room session participant count in Firestore
+      serverSaveSessionStart({
+        id: `sess-room-${room.id}`,
+        sessionId: `sess-room-${room.id}`,
+        type: room.type === 'private' ? 'private_room' : 'public_room',
+        roomId: room.id,
+        participantCount: room.participants.length,
+        participants: `${room.name} (${room.participants.length} participants)`,
+        startedAt: new Date(room.createdAt || Date.now()).toISOString(),
+        status: 'active',
+        durationSeconds: Math.max(1, Math.round((Date.now() - (room.createdAt || Date.now())) / 1000)),
+        createdAt: room.createdAt || Date.now(),
+      });
+
       // Transfer ownership if creator left
       if (room.creatorId === user.sessionId && room.participants.length > 0) {
         room.creatorId = room.participants[0].id;
@@ -944,8 +1206,24 @@ io.on('connection', (socket: Socket) => {
     room.participants = room.participants.filter(p => p.id !== user.sessionId);
     room.participants.push(participant);
 
+    // Save/update room session in Firestore
+    const roomSessionId = `sess-room-${room.id}`;
+    serverSaveSessionStart({
+      id: roomSessionId,
+      sessionId: roomSessionId,
+      type: room.type === 'private' ? 'private_room' : 'public_room',
+      roomId: room.id,
+      participantCount: room.participants.length,
+      participants: `${room.name} (${room.participants.length} participants)`,
+      startedAt: new Date(room.createdAt || Date.now()).toISOString(),
+      status: 'active',
+      durationSeconds: Math.max(1, Math.round((Date.now() - (room.createdAt || Date.now())) / 1000)),
+      createdAt: room.createdAt || Date.now(),
+    });
+
     // Notify joiner with full room state
     socket.emit('room:joined', {
+      sessionId: roomSessionId,
       room,
       participants: room.participants,
       iceServers: getIceServers(),

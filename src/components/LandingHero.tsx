@@ -1,18 +1,20 @@
 import React from 'react';
 import { Globe3D } from './Globe3D.tsx';
-import { Radio, Users, ShieldCheck, Zap, Lock, Volume2, Video, ArrowRight } from 'lucide-react';
+import { Radio, Users, ShieldCheck, Zap, Lock, Volume2, Video, ArrowRight, Database } from 'lucide-react';
 import { ServerStats } from '../types.ts';
 
 interface LandingHeroProps {
   onStartRandomTalk: () => void;
   onExploreRooms: () => void;
   stats: ServerStats;
+  onOpenAdmin?: () => void;
 }
 
 export const LandingHero: React.FC<LandingHeroProps> = ({
   onStartRandomTalk,
   onExploreRooms,
   stats,
+  onOpenAdmin,
 }) => {
   return (
     <div className="relative min-h-[calc(100vh-4rem)] min-h-[calc(100dvh-4rem)] flex flex-col justify-between overflow-hidden">
@@ -67,6 +69,17 @@ export const LandingHero: React.FC<LandingHeroProps> = ({
             <Users className="w-4 h-4 sm:w-5 sm:h-5 text-slate-400" />
             <span>EXPLORE ROOMS</span>
           </button>
+
+          {onOpenAdmin && (
+            <button
+              onClick={onOpenAdmin}
+              className="w-full sm:w-auto px-5 sm:px-6 py-3.5 sm:py-4 rounded-2xl bg-white/[0.03] hover:bg-white/[0.08] text-slate-300 hover:text-white font-semibold text-sm sm:text-lg tracking-wide backdrop-blur-xl border border-white/10 active:scale-[0.98] transition-all flex items-center justify-center gap-2.5 sm:gap-3 cursor-pointer"
+              title="View live sessions, call duration, and database stats"
+            >
+              <Database className="w-4 h-4 sm:w-5 sm:h-5 text-violet-400" />
+              <span>ADMIN PANEL</span>
+            </button>
+          )}
         </div>
 
         {/* Micro feature pills */}

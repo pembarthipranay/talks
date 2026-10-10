@@ -22,10 +22,12 @@ import {
   Check,
   Bot,
   Share2,
+  Database,
 } from 'lucide-react';
 import { MatchState, UserSession, IceServerConfig, ChatMessage, ReportReason } from '../types.ts';
 import { PeerConnectionWrapper, startSpeakingDetector, stopSpeakingDetector, stopMediaStream, flipCameraStream } from '../services/webrtc.ts';
 import { ReportModal, BlockModal } from './SafetyModals.tsx';
+import { saveSessionStart, saveSessionEnd } from '../services/firebase.ts';
 
 interface RandomTalkViewProps {
   socket: Socket;
@@ -45,6 +47,8 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
   const [isInitiator, setIsInitiator] = useState<boolean>(false);
   const [iceServers, setIceServers] = useState<IceServerConfig[]>([]);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [copiedSessionId, setCopiedSessionId] = useState(false);
 
   // Media states
   const [isLocalMuted, setIsLocalMuted] = useState(false);
@@ -155,8 +159,22 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
     };
   }, [localStream, socket]);
 
+  // Active session tracking in Cloud Firestore
+  const activeDbSessionIdRef = useRef<string | null>(null);
+  const sessionStartTimeRef = useRef<number>(0);
+
+  const recordActiveSessionEnd = () => {
+    setActiveSessionId(null);
+    if (activeDbSessionIdRef.current) {
+      const elapsedSec = Math.max(1, Math.round((Date.now() - sessionStartTimeRef.current) / 1000));
+      saveSessionEnd(activeDbSessionIdRef.current, elapsedSec);
+      activeDbSessionIdRef.current = null;
+    }
+  };
+
   // Cleanup helper
   const teardownPeerConnection = () => {
+    recordActiveSessionEnd();
     if (pcWrapperRef.current) {
       pcWrapperRef.current.close();
       pcWrapperRef.current = null;
@@ -227,11 +245,12 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
     };
 
     const handleMatchFound = async (data: {
+      sessionId?: string;
       stranger: { id: string; name: string; avatarSeed: string; isAiCompanion?: boolean };
       isInitiator: boolean;
       iceServers: IceServerConfig[];
     }) => {
-      console.log('[Matchmaker] Matched with stranger:', data.stranger, 'Initiator:', data.isInitiator);
+      console.log('[Matchmaker] Matched with stranger:', data.stranger, 'Initiator:', data.isInitiator, 'Session:', data.sessionId);
       setStranger(data.stranger);
       setIsInitiator(data.isInitiator);
       setIceServers(data.iceServers);
@@ -239,6 +258,19 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
       setChatMessages([]);
 
       teardownPeerConnection();
+
+      // Record session start in Cloud Firestore
+      const newDbSessionId = data.sessionId || `sess-rt-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+      activeDbSessionIdRef.current = newDbSessionId;
+      sessionStartTimeRef.current = Date.now();
+      setActiveSessionId(newDbSessionId);
+
+      saveSessionStart({
+        sessionId: newDbSessionId,
+        type: 'random_talk',
+        participants: `${currentUser?.name || 'You'} & ${data.stranger.name}`,
+        participantCount: 2,
+      });
 
       // Create WebRTC Peer Connection
       const pcWrapper = new PeerConnectionWrapper(
@@ -472,6 +504,22 @@ export const RandomTalkView: React.FC<RandomTalkViewProps> = ({
                 {stranger?.isAiCompanion ? '🤖 Solo Practice Bot' : '🟢 Real Person Connected'}
               </span>
             </div>
+          )}
+
+          {matchState === 'CONNECTED' && activeSessionId && (
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(activeSessionId);
+                setCopiedSessionId(true);
+                setTimeout(() => setCopiedSessionId(false), 2000);
+              }}
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-mono text-slate-300 transition-colors cursor-pointer"
+              title="Click to copy Session ID"
+            >
+              <Database className="w-3 h-3 text-cyan-400" />
+              <span>Session: {activeSessionId.length > 18 ? activeSessionId.slice(0, 16) + '...' : activeSessionId}</span>
+              {copiedSessionId ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-slate-400" />}
+            </button>
           )}
 
           {matchState === 'CONNECTED' && isStrangerSpeaking && (

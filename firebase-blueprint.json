@@ -1,0 +1,29 @@
+{
+  "entities": {
+    "CallSession": {
+      "title": "CallSession",
+      "description": "Voice and video call session recording duration, participants, and timestamps",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique session identifier" },
+        "sessionId": { "type": "string", "description": "Client or connection session ID" },
+        "type": { "type": "string", "enum": ["random_talk", "private_room", "public_room"], "description": "Type of call session" },
+        "roomId": { "type": "string", "description": "Room identifier if applicable" },
+        "participantCount": { "type": "number", "description": "Number of participants in this session" },
+        "participants": { "type": "string", "description": "Summary or names of participants in session" },
+        "startedAt": { "type": "string", "description": "ISO timestamp when session began" },
+        "endedAt": { "type": "string", "description": "ISO timestamp when session ended" },
+        "durationSeconds": { "type": "number", "description": "Duration of session in seconds" },
+        "status": { "type": "string", "enum": ["active", "completed", "abandoned"], "description": "Status of the session" },
+        "createdAt": { "type": "number", "description": "Unix timestamp in ms" }
+      },
+      "required": ["sessionId", "type", "startedAt", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/sessions/{sessionId}": {
+      "schema": "CallSession",
+      "description": "Recorded call sessions for administrative tracking and analytics"
+    }
+  }
+}

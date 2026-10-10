@@ -31,6 +31,7 @@ import {
   processImageUpload,
   flipCameraStream,
 } from '../services/webrtc.ts';
+import { saveSessionStart, saveSessionEnd } from '../services/firebase.ts';
 
 interface RoomViewProps {
   socket: Socket;
@@ -147,7 +148,20 @@ export const RoomView: React.FC<RoomViewProps> = ({
     return pcWrap;
   };
 
+  // Room session tracking in Cloud Firestore
+  const roomDbSessionIdRef = useRef<string | null>(null);
+  const roomSessionStartTimeRef = useRef<number>(0);
+
+  const endRoomDbSession = () => {
+    if (roomDbSessionIdRef.current) {
+      const elapsedSec = Math.max(1, Math.round((Date.now() - roomSessionStartTimeRef.current) / 1000));
+      saveSessionEnd(roomDbSessionIdRef.current, elapsedSec);
+      roomDbSessionIdRef.current = null;
+    }
+  };
+
   const teardownAllRoomPeers = () => {
+    endRoomDbSession();
     peerConnectionsRef.current.forEach((pc) => pc.close());
     peerConnectionsRef.current.clear();
     remoteStreamsRef.current.clear();
@@ -160,6 +174,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
     socket.emit('room:join', { roomId, token: roomToken });
 
     const handleRoomJoined = async (data: {
+      sessionId?: string;
       room: Room;
       participants: RoomParticipant[];
       iceServers: IceServerConfig[];
@@ -169,6 +184,19 @@ export const RoomView: React.FC<RoomViewProps> = ({
       setParticipants(data.participants);
       setIceServers(data.iceServers);
       iceServersRef.current = data.iceServers;
+
+      // Record room session in Cloud Firestore
+      endRoomDbSession();
+      const sId = data.sessionId || `sess-room-${data.room.id}`;
+      roomDbSessionIdRef.current = sId;
+      roomSessionStartTimeRef.current = Date.now();
+      saveSessionStart({
+        sessionId: sId,
+        type: data.room.type === 'private' ? 'private_room' : 'public_room',
+        roomId: data.room.id,
+        participants: `${data.room.name} (${data.participants.length} members)`,
+        participantCount: data.participants.length,
+      });
 
       // Connect WebRTC to existing participants in room
       data.participants.forEach(async (p) => {

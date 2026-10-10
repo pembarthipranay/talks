@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { AppView, ServerStats } from '../types.ts';
-import { Radio, Users, Shield, Sparkles, Menu, X, Activity } from 'lucide-react';
+import { Radio, Users, Shield, Sparkles, Menu, X, Activity, Database, Lock } from 'lucide-react';
 
 interface NavbarProps {
   currentView: AppView;
   onNavigate: (view: AppView) => void;
   stats: ServerStats;
   onOpenPrivacy: () => void;
+  onOpenAdmin: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -14,6 +15,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   stats,
   onOpenPrivacy,
+  onOpenAdmin,
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -82,6 +84,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Shield className="w-3.5 h-3.5 text-emerald-400" />
                 No-Account Privacy
               </span>
+            </button>
+            <button
+              onClick={onOpenAdmin}
+              className="px-3 py-1.5 rounded-full text-sm font-medium text-slate-400 hover:text-white hover:bg-white/5 transition-all flex items-center gap-1.5"
+              title="Admin Database Panel (Admin Only)"
+            >
+              <Database className="w-3.5 h-3.5 text-violet-400" />
+              <span>Admin</span>
+              <Lock className="w-3 h-3 text-slate-500" />
             </button>
           </nav>
         </div>
@@ -165,6 +176,23 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>No-Account Privacy</span>
             </div>
             <span className="text-[10px] font-mono text-emerald-400">0 Data Stored</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setIsMobileMenuOpen(false);
+              onOpenAdmin();
+            }}
+            className="w-full flex items-center justify-between p-3 rounded-xl text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <Database className="w-4 h-4 text-violet-400" />
+              <span>Admin Database</span>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 flex items-center gap-1">
+              <Lock className="w-2.5 h-2.5" />
+              Admin Only
+            </span>
           </button>
 
           {/* Mobile Live Activity Strip */}
